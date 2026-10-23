@@ -104,7 +104,7 @@ const demo = await api.loadUsage(settings);
 assert.equal(api.effectiveStatus(demo, settings, api.DEMO_NOW + 30 * 60000), 'stale');
 assert.ok(api.footerLabel(demo, 'stale', false).includes('10/24 23:58'));
 assert.ok(api.footerLabel(await api.loadUsage({ scenario: 'error' }), 'error', false).includes('尚无成功刷新'));
-assert.throws(() => api.readSettings('{"refreshMinutes":0}'));
+assert.equal(api.readSettings('{"refreshMinutes":1,"refreshSeconds":5}').refreshSeconds, 600);
 const invalid = await capture('small', { theme: 'invalid' });
 assert.ok(html(invalid.widget).includes('参数有误'));
 
@@ -119,7 +119,23 @@ for (const family of ['small', 'medium', 'large']) for (const target of ['chatgp
     assert.equal(link.protocol, 'scriptable:');
     assert.equal(link.searchParams.get('action'), 'update');
     assert.equal(JSON.parse(link.searchParams.get('parameter')).openURL, target);
+    assert.equal(JSON.parse(link.searchParams.get('parameter')).refreshSeconds, undefined);
   }
+}
+
+// All sizes schedule the saved local interval; server retry deadlines still win.
+const clock = Date.parse('2026-10-24T15:58:00Z');
+class Clock extends Date { constructor(...args) { super(...(args.length ? args : [clock])); } static now() { return clock; } }
+for (const family of ['small', 'medium', 'large']) for (const seconds of [1, 30, 86400]) {
+  const { widget, api } = await capture(family, { scenario: 'demo' }, { globals: {
+    Date: Clock,
+    Keychain: { contains: key => key === 'CodexUsage.preferences.v1', get: () => JSON.stringify({ refreshSeconds: seconds }) },
+  } });
+  assert.equal(widget.refreshAfterDate.getTime(), clock + seconds * 1000);
+  const settings = api.readSettings('{"scenario":"demo"}');
+  const snapshot = await api.loadUsage(settings);
+  snapshot.retryAt = clock + 2 * 86400000;
+  assert.equal(api.renderWidget(snapshot, settings, family, clock).refreshAfterDate.getTime(), snapshot.retryAt);
 }
 
 const output = `<!doctype html>
@@ -129,7 +145,7 @@ const output = `<!doctype html>
 *{box-sizing:border-box}body{margin:0;background:#f5f5f7;color:#171719;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}main{max-width:1140px;margin:0 auto;padding:44px 36px}h1{font-size:28px;font-weight:600;letter-spacing:-.7px;margin:0 0 10px}p{color:#6b6b72;line-height:1.7;margin:0 0 25px}.controls{display:flex;flex-wrap:wrap;gap:14px;margin:24px 0 30px}label{font-size:12px;color:#6b6b72}select{display:block;margin-top:7px;min-width:150px;padding:10px 12px;border:1px solid #dddde2;border-radius:10px;background:white;color:#171719;font:14px inherit}.stage{background:radial-gradient(ellipse at 17% 100%,#dbc7c0,transparent 58%),linear-gradient(140deg,#4583a6,#527a99 52%,#727691);border-radius:28px;padding:34px;display:flex;align-items:flex-start;gap:28px;flex-wrap:wrap}.device-label{font-size:12px;letter-spacing:.3px;color:#fff9;margin-bottom:14px}.widget{width:164px;height:164px;border-radius:29px;overflow:hidden;box-shadow:0 2px 8px #00000004}.medium .widget{width:344px;height:164px}.large .widget{width:344px;height:364px}.native-text{display:block;flex-shrink:0;line-height:1.2;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;letter-spacing:-.15px}.note{margin:22px 0 0;font-size:12px;max-width:850px}.links{display:flex;gap:20px;margin-top:18px}a{color:#087bce;text-decoration:none}a:hover{text-decoration:underline}.legend{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#6b6b72;margin-bottom:4px}.dot{height:6px;width:6px;border-radius:50%;background:#0088ff}
 @media(max-width:600px){main{padding:25px 16px}.stage{padding:22px 14px;gap:24px}.medium .widget,.large .widget{width:min(344px,calc(100vw - 60px))}h1{font-size:24px}}
 </style></head><body><main>
-<div class="legend"><span class="dot"></span>Scriptable · 1.0.2</div>
+<div class="legend"><span class="dot"></span>Scriptable · 1.0.3</div>
 <h1>Codex 额度，一眼可见。</h1><p>参考你提供的原版组件，保留大号额度数字、蓝色进度条与简洁留白。</p>
 <div class="controls"><label>外观<select id="theme"><option value="light">浅色 · 原版风格</option><option value="dark">深色</option></select></label><label>数据状态<select id="scenario"><option value="demo">示例数据</option><option value="stale">示例 · 数据过期</option><option value="empty">尚未接入</option><option value="error">示例 · 请求失败</option></select></label><label>小号 / 中号额度窗口<select id="window"><option value="weekly">Weekly</option><option value="session">Session</option></select></label></div>
 <div class="stage"><section class="small"><div class="device-label">小号 · 单个额度窗口</div><div id="small"></div></section><section class="medium"><div class="device-label">中号 · 单个额度窗口</div><div id="medium"></div></section><section class="large"><div class="device-label">大号 · 两个额度窗口</div><div id="large"></div></section></div>

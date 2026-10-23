@@ -18,10 +18,10 @@ const fixture = () => ({
   limits: [{ limitId: 'codex', planType: 'prolite', primary: { usedPercent: 88, remainingPercent: 12, windowDurationMins: 10080, resetsAt: 1793294364 }, secondary: null, spendControlReached: false, rateLimitReachedType: null }],
 });
 
-function harness({ configured = true, responses = [], files = new Map(), failWrites = false, corruptWrites = false, keychainFails = false, noStorage = false, scriptWriteFails = false, cloud = false, extra = {} } = {}) {
+function harness({ configured = true, responses = [], files = new Map(), failWrites = false, corruptWrites = false, keychainFails = false, noStorage = false, scriptWriteFails = false, cloud = false, alertSteps = [], extra = {} } = {}) {
   let now = NOW, uid = 0;
   const calls = [];
-  const messages = [], launches = [], downloads = [], widgets = [];
+  const messages = [], menus = [], launches = [], downloads = [], widgets = [];
   const keys = new Map(configured ? [['CodexUsage.connection.v1', JSON.stringify(PROFILE)]] : []);
   class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
   const fm = {
@@ -36,12 +36,12 @@ function harness({ configured = true, responses = [], files = new Map(), failWri
     isFileStoredIniCloud: () => cloud,
     downloadFileFromiCloud: async path => downloads.push(path),
   };
-  const api = vm.runInNewContext(`${source}\n;({readSettings, cleanPayload, snapshotFrom, chooseWindows, loadUsage, readConnection, saveConnection, normalizeEndpoint, footerLabel, effectiveStatus, fetchUsage, retryTime, configureConnection, main, sha256, validateUpdate, newerVersion, updateScript, restoreScript, replaceScript, scriptURL, widgetTapURL, resetLabel, beijingTime, setRenderer: fn => {renderWidget = fn;}})`, {
+  const api = vm.runInNewContext(`${source}\n;({readSettings, readRefreshSeconds, saveRefreshSeconds, configureRefresh, cleanPayload, snapshotFrom, chooseWindows, loadUsage, readConnection, saveConnection, normalizeEndpoint, footerLabel, effectiveStatus, fetchUsage, retryTime, configureConnection, main, sha256, validateUpdate, newerVersion, updateScript, restoreScript, replaceScript, scriptURL, widgetTapURL, resetLabel, beijingTime, setRenderer: fn => {renderWidget = fn;}})`, {
     Date: Clock,
     UUID: { string: () => 'test-new-cache-000' + ++uid },
     Keychain: {
       contains: key => { if (keychainFails) throw Error('locked'); return keys.has(key); },
-      get: key => keys.get(key), set: (key, value) => keys.set(key, value),
+      get: key => keys.get(key), set: (key, value) => { if (keychainFails) throw Error('locked'); keys.set(key, value); },
     },
     FileManager: { local: () => { if (noStorage) throw Error('unavailable'); return fm; }, iCloud: () => fm },
     module: { filename: '/documents/CodexUsage.js' },
@@ -49,7 +49,15 @@ function harness({ configured = true, responses = [], files = new Map(), failWri
     args: { queryParameters: {} },
     Script: { name: () => 'CodexUsage', setWidget: widget => widgets.push(widget) },
     Safari: { open: async url => launches.push(url) },
-    Alert: class { addAction() {} addCancelAction() {} async presentAlert() { messages.push({ title: this.title, message: this.message }); return 0; } async presentSheet() { throw Error('unexpected menu'); } },
+    Alert: class {
+      fields = []; actions = [];
+      addAction(label) { this.actions.push(label); } addCancelAction() {}
+      addTextField(label, value) { this.fields.push({ label, value }); }
+      addSecureTextField(label, value) { this.addTextField(label, value); }
+      textFieldValue(index) { return this.answer?.values?.[index] ?? this.fields[index].value; }
+      async presentAlert() { messages.push({ title: this.title, message: this.message, fields: this.fields }); this.answer = alertSteps.shift(); return this.answer?.choice ?? 0; }
+      async presentSheet() { if (!alertSteps.length) throw Error('unexpected menu'); menus.push({ title: this.title, message: this.message, actions: this.actions }); return alertSteps.shift().choice; }
+    },
     Request: class {
       constructor(url) { this.url = url; }
       async loadString() {
@@ -64,7 +72,7 @@ function harness({ configured = true, responses = [], files = new Map(), failWri
     },
     ...extra,
   });
-  return { api, calls, keys, files, responses, messages, launches, downloads, widgets, setNow: value => { now = value; }, setWriteFailure: value => { failWrites = value; }, setCorruptWrites: value => { corruptWrites = value; }, settings: api.readSettings('') };
+  return { api, calls, keys, files, responses, messages, menus, launches, downloads, widgets, setNow: value => { now = value; }, setWriteFailure: value => { failWrites = value; }, setCorruptWrites: value => { corruptWrites = value; }, settings: api.readSettings('') };
 }
 
 test('companion HTTP API returns quota that the widget can display', async t => {
@@ -99,12 +107,92 @@ test('companion HTTP API returns quota that the widget can display', async t => 
 test('defaults use live data; credentials and endpoint are excluded from widget parameters', () => {
   const { api, settings } = harness();
   assert.equal(settings.scenario, 'live');
-  assert.equal(settings.refreshMinutes, 10);
+  assert.equal(settings.refreshSeconds, 600);
   assert.equal(settings.window, 'auto');
   const safe = api.readSettings(JSON.stringify({ apiKey: KEY, endpoint: 'https://other.test', theme: 'dark' }));
   assert.equal(safe.apiKey, undefined);
   assert.equal(safe.endpoint, undefined);
-  assert.throws(() => api.readSettings('{"refreshMinutes":0}'));
+  assert.equal(safe.refreshMinutes, undefined);
+});
+
+test('refresh seconds persist locally, override old parameters and stay out of script links', () => {
+  const h = harness();
+  const connection = h.keys.get('CodexUsage.connection.v1');
+  assert.equal(h.api.saveRefreshSeconds(' 30 '), 30);
+  assert.equal(h.api.readRefreshSeconds(), 30);
+  assert.equal(JSON.parse(h.keys.get('CodexUsage.preferences.v1')).refreshSeconds, 30);
+  const settings = h.api.readSettings('{"refreshMinutes":1,"refreshSeconds":99,"openURL":"myapp://"}');
+  assert.equal(settings.refreshSeconds, 30);
+  assert.equal(settings.refreshMinutes, undefined);
+  assert.equal(h.api.readSettings('chatgpt://').refreshSeconds, 30);
+  for (const action of [undefined, 'update', 'refresh']) {
+    const url = new URL(h.api.scriptURL(settings, 'medium', action));
+    const parameter = JSON.parse(url.searchParams.get('parameter'));
+    assert.equal(parameter.refreshSeconds, undefined);
+    assert.equal(parameter.refreshMinutes, undefined);
+    assert.equal(parameter.openURL, 'myapp://');
+    h.api.saveRefreshSeconds(15);
+    assert.equal(h.api.readSettings(url.searchParams.get('parameter')).refreshSeconds, 15);
+  }
+  assert.equal(h.keys.get('CodexUsage.connection.v1'), connection);
+});
+
+test('local refresh values validate integer seconds and preserve settings on invalid input', () => {
+  const h = harness();
+  for (const value of [1, 30, 600, 86400]) {
+    h.api.saveRefreshSeconds(value);
+    assert.equal(h.api.readRefreshSeconds(), value);
+  }
+  h.api.saveRefreshSeconds(30);
+  for (const value of ['', ' ', '0', '-1', '0.5', '1e3', 'NaN', 86401, null]) {
+    assert.throws(() => h.api.saveRefreshSeconds(value), /整数秒/);
+    assert.equal(h.api.readRefreshSeconds(), 30);
+  }
+  h.keys.set('CodexUsage.preferences.v1', '{broken');
+  assert.equal(h.api.readRefreshSeconds(), 600);
+  h.keys.set('CodexUsage.preferences.v1', '{"refreshSeconds":0}');
+  assert.equal(h.api.readRefreshSeconds(), 600);
+  const locked = harness({ keychainFails: true });
+  assert.equal(locked.api.readRefreshSeconds(), 600);
+  assert.throws(() => locked.api.saveRefreshSeconds(30), /未能保存/);
+});
+
+test('refresh settings form retries invalid input, and cancel preserves the saved interval', async () => {
+  const h = harness({ alertSteps: [{ choice: 0, values: ['0'] }, { choice: 0 }, { choice: 0, values: ['30'] }, { choice: -1 }] });
+  assert.equal(await h.api.configureRefresh(), true);
+  assert.equal(h.api.readRefreshSeconds(), 30);
+  assert.equal(h.messages[0].fields[0].value, '600');
+  assert.match(h.messages[1].message, /整数秒/);
+  assert.equal(await h.api.configureRefresh(), false);
+  assert.equal(h.messages.at(-1).fields[0].value, '30');
+  assert.equal(h.api.readRefreshSeconds(), 30);
+  assert.equal(h.calls.length, 0);
+});
+
+test('refresh menu saves seconds then forces exactly one request with the new interval', async () => {
+  const h = harness({ responses: [{}, {}], alertSteps: [{ choice: 5 }, { choice: 0, values: ['30'] }] });
+  await h.api.loadUsage(h.settings);
+  let rendered, presented = 0;
+  h.api.setRenderer((snapshot, settings) => {
+    rendered = { snapshot, settings };
+    return { presentMedium: async () => { presented++; } };
+  });
+  await h.api.main();
+  assert.equal(h.calls.length, 2, 'save must bypass the previously fresh 600-second cache once');
+  assert.equal(h.calls[1].url, PROFILE.endpoint + '?refresh=1');
+  assert.match(h.menus[0].actions[5], /600 秒/);
+  assert.equal(rendered.settings.refreshSeconds, 30);
+  assert.equal(presented, 1);
+});
+
+test('cancel from refresh menu does not read the API or change local settings', async () => {
+  const h = harness({ alertSteps: [{ choice: 5 }, { choice: -1 }] });
+  h.api.saveRefreshSeconds(15);
+  await h.api.main();
+  assert.match(h.menus[0].message, /15 秒/);
+  assert.equal(h.api.readRefreshSeconds(), 15);
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.widgets.length, 0);
 });
 
 test('URL parameters configure arbitrary app taps and survive encoded update links', () => {
@@ -237,6 +325,28 @@ test('Bearer request, 10-minute cache, force refresh and credential-free disk ca
   assert.ok([...h.files.values()].every(value => !value.includes(KEY) && !value.includes('Authorization')));
 });
 
+test('local second intervals govern the cache boundary and stale threshold', async () => {
+  for (const seconds of [1, 30, 120]) {
+    const h = harness({ responses: [{}, {}] });
+    h.api.saveRefreshSeconds(seconds);
+    const settings = h.api.readSettings('');
+    await h.api.loadUsage(settings);
+    h.setNow(NOW + seconds * 1000 - 1);
+    await h.api.loadUsage(settings);
+    assert.equal(h.calls.length, 1);
+    h.setNow(NOW + seconds * 1000);
+    await h.api.loadUsage(settings);
+    assert.equal(h.calls.length, 2);
+  }
+  const { api } = harness();
+  const snapshot = { status: 'ready', updatedAt: new Date(NOW).toISOString() };
+  for (const [seconds, staleAfter] of [[30, 1800000], [3600, 10800000]]) {
+    const settings = { ...api.readSettings(''), refreshSeconds: seconds };
+    assert.equal(api.effectiveStatus(snapshot, settings, NOW + staleAfter - 1), 'ready');
+    assert.equal(api.effectiveStatus(snapshot, settings, NOW + staleAfter), 'stale');
+  }
+});
+
 test('expired data is marked stale; failed requests retain the original successful timestamp', async () => {
   const h = harness({ responses: [{}, { status: 503, body: { ok: false } }, {}] });
   await h.api.loadUsage(h.settings);
@@ -245,7 +355,7 @@ test('expired data is marked stale; failed requests retain the original successf
   assert.equal(stale.status, 'stale');
   assert.equal(stale.updatedAt, fixture().fetchedAt);
   assert.equal(stale.windows[0].remainingPercent, 12);
-  assert.match(h.api.footerLabel(stale, 'stale', false), /刷新失败/);
+  assert.match(h.api.footerLabel(stale, 'stale', false), /服务异常/);
   await h.api.loadUsage(h.settings);
   assert.equal(h.calls.length, 2, 'failure cooldown avoids repeated requests');
   const restored = await h.api.loadUsage(h.settings, { force: true });
@@ -256,6 +366,11 @@ test('expired data is marked stale; failed requests retain the original successf
 for (const [name, response, code] of [
   ['401', { status: 401, error: KEY }, 'AUTH'],
   ['timeout', { status: 0, error: KEY }, 'NETWORK'],
+  ['connection refused', { status: 0, error: 'Could not connect to the server. ' + KEY }, 'CONNECT'],
+  ['system connection error', { status: 0, error: 'NSURLErrorDomain Code=-1004 ' + KEY }, 'CONNECT'],
+  ['request timed out', { status: 0, error: 'The request timed out. ' + KEY }, 'TIMEOUT'],
+  ['Chinese timeout', { status: 0, error: '请求超时 ' + KEY }, 'TIMEOUT'],
+  ['DNS lookup failure', { status: 0, error: 'A server with the specified hostname could not be found. ' + KEY }, 'DNS'],
   ['malformed JSON', { raw: '<html>proxy error</html>' }, 'FORMAT'],
   ['wrong payload', { body: { ok: true } }, 'FORMAT'],
   ['API failure in HTTP 200', { body: { ok: false, error: { code: 'CODEX_TIMEOUT', message: KEY } } }, 'SERVER'],
@@ -268,6 +383,20 @@ for (const [name, response, code] of [
   assert.equal(result.updatedAt, null);
   assert.equal(result.isDemo, undefined);
   assert.ok(!JSON.stringify(result).includes(KEY));
+  assert.ok([...h.files.values()].every(value => !value.includes(KEY)));
+});
+
+test('network failure keeps old quota, reports the cause and preserves it during cooldown', async () => {
+  const h = harness({ responses: [{}, { status: 0, error: 'ECONNREFUSED ' + KEY }] });
+  await h.api.loadUsage(h.settings);
+  const result = await h.api.loadUsage(h.settings, { force: true });
+  assert.equal(result.errorCode, 'CONNECT');
+  assert.equal(result.updatedAt, fixture().fetchedAt);
+  assert.equal(result.windows[0].remainingPercent, 12);
+  assert.match(h.api.footerLabel(result, 'stale', false), /连接失败/);
+  const cached = await h.api.loadUsage(h.settings);
+  assert.equal(cached.errorCode, 'CONNECT');
+  assert.equal(h.calls.length, 2);
   assert.ok([...h.files.values()].every(value => !value.includes(KEY)));
 });
 
@@ -348,6 +477,8 @@ test('update pins both files to one commit, verifies backup, and launches the ne
   const files = new Map([['/documents/CodexUsage.js', fullSource]]);
   const h = harness({ responses: updateResponses(), files, cloud: true });
   const connection = h.keys.get('CodexUsage.connection.v1');
+  h.api.saveRefreshSeconds(30);
+  const preferences = h.keys.get('CodexUsage.preferences.v1');
   const target = 'myapp://view?title=hello%20world&next=a%2Bb#details';
   await h.api.updateScript({ ...h.settings, theme: 'dark', openURL: target }, 'large');
   assert.equal(h.files.get('/documents/CodexUsage.js'), nextSource);
@@ -355,12 +486,14 @@ test('update pins both files to one commit, verifies backup, and launches the ne
   assert.ok(h.calls.slice(1).every(call => call.url.endsWith('?ref=' + 'a'.repeat(40))));
   assert.ok(h.calls.every(call => !('Authorization' in call.headers)));
   assert.equal(h.keys.get('CodexUsage.connection.v1'), connection);
+  assert.equal(h.keys.get('CodexUsage.preferences.v1'), preferences);
   assert.equal(h.launches.length, 1);
   const url = new URL(h.launches[0]);
   assert.equal(url.searchParams.get('action'), 'refresh');
   assert.equal(url.searchParams.get('family'), 'large');
   assert.equal(JSON.parse(url.searchParams.get('parameter')).theme, 'dark');
   assert.equal(JSON.parse(url.searchParams.get('parameter')).openURL, target);
+  assert.equal(JSON.parse(url.searchParams.get('parameter')).refreshSeconds, undefined);
   assert.equal(url.protocol, 'scriptable:');
   assert.ok(!h.launches[0].includes(KEY));
   assert.equal(h.downloads.length, 1);
@@ -383,10 +516,12 @@ test('corrupt download, same version and failed replacement preserve the install
 
 test('restore validates and recovers the previous script without changing credentials', async () => {
   const h = harness({ files: new Map([['/documents/CodexUsage.js', fullSource]]), responses: updateResponses() });
+  h.api.saveRefreshSeconds(17);
   await h.api.updateScript(h.settings, 'small');
   await h.api.restoreScript(h.settings, 'small');
   assert.equal(h.files.get('/documents/CodexUsage.js'), fullSource);
   assert.equal(h.api.readConnection().apiKey, KEY);
+  assert.equal(h.api.readRefreshSeconds(), 17);
   assert.equal(h.launches.length, 2);
 });
 

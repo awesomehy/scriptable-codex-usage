@@ -1,15 +1,18 @@
 // Variables used by Scriptable.
 // icon-color: blue; icon-glyph: chart-bar;
 // CODEX_USAGE_WIDGET
-// version: 1.0.2
+// version: 1.0.3
 // Codex Usage
 // 独立脚本：全部复制到 Scriptable，命名为 CodexUsage。
 // 首次运行设置 API Key。密钥仅保存到 Scriptable Keychain，不要写入脚本或组件参数。
 
-const VERSION = "1.0.2";
+const VERSION = "1.0.3";
 const REPOSITORY = "awesomehy/scriptable-codex-usage";
 const CONNECTION_KEY = "CodexUsage.connection.v1";
-const DEFAULTS = { theme: "light", scenario: "live", window: "auto", limitId: "codex", refreshMinutes: 10, openURL: "" };
+const PREFERENCES_KEY = "CodexUsage.preferences.v1";
+const DEFAULT_REFRESH_SECONDS = 600;
+const DEFAULTS = { theme: "light", scenario: "live", window: "auto", limitId: "codex", openURL: "" };
+const FETCH_ERROR_CODES = ["AUTH", "NETWORK", "CONNECT", "TIMEOUT", "DNS", "FORMAT", "SERVER", "REDIRECT", "RATE"];
 const DEMO_NOW = Date.parse("2026-10-24T15:58:00Z");
 const FAMILIES = ["small", "medium", "large"];
 
@@ -35,10 +38,29 @@ function readSettings(parameter) {
     throw new Error("openURL 需要完整的 URL Scheme（如 myapp://），链接内的空格请写成 %20。");
   }
   if (typeof settings.limitId !== "string" || !/^[a-zA-Z0-9_.-]{1,80}$/.test(settings.limitId)) throw new Error("limitId 请填写接口中的额度标识。");
-  if (!Number.isInteger(settings.refreshMinutes) || settings.refreshMinutes < 1 || settings.refreshMinutes > 1440) {
-    throw new Error("refreshMinutes 请填写 1–1440 之间的整数。");
-  }
-  return settings;
+  return { ...settings, refreshSeconds: readRefreshSeconds() };
+}
+
+function validRefreshSeconds(value) {
+  return Number.isInteger(value) && value >= 1 && value <= 86400;
+}
+
+function readRefreshSeconds() {
+  try {
+    if (Keychain.contains(PREFERENCES_KEY)) {
+      const value = JSON.parse(Keychain.get(PREFERENCES_KEY));
+      if (validRefreshSeconds(value?.refreshSeconds)) return value.refreshSeconds;
+    }
+  } catch (_) { /* 首次运行或本地设置不可读时使用默认间隔。 */ }
+  return DEFAULT_REFRESH_SECONDS;
+}
+
+function saveRefreshSeconds(value) {
+  const text = String(value).trim(), seconds = Number(text);
+  if (!/^\d+$/.test(text) || !validRefreshSeconds(seconds)) throw new Error("请填写 1–86400 之间的整数秒。");
+  try { Keychain.set(PREFERENCES_KEY, JSON.stringify({ refreshSeconds: seconds })); }
+  catch (_) { throw new Error("刷新间隔未能保存到本机，请重试。"); }
+  return seconds;
 }
 
 function demoUsage(settings) {
@@ -102,7 +124,8 @@ function sha256(text) {
 
 function usageError(code) {
   const messages = {
-    AUTH: "API Key 无效，请重新设置", NETWORK: "网络连接失败或超时", FORMAT: "接口返回格式不正确",
+    AUTH: "API Key 无效，请重新设置", NETWORK: "网络连接失败，请检查网络", FORMAT: "接口返回格式不正确",
+    CONNECT: "无法连接 API 服务，请检查服务是否启动及端口是否开放", TIMEOUT: "接口请求超时，请检查服务和网络", DNS: "接口域名解析失败，请检查地址和 DNS",
     SERVER: "服务端读取额度失败", REDIRECT: "接口发生重定向，请更新地址", RATE: "请求过多，请稍后刷新",
     CONFIG: "请先打开脚本设置接口", KEYCHAIN: "无法读取钥匙串，请打开脚本设置",
   };
@@ -112,7 +135,16 @@ function usageError(code) {
 }
 
 function compactError(code) {
-  return { AUTH: "API Key 无效", NETWORK: "网络失败或超时", FORMAT: "接口格式错误", SERVER: "服务端读取失败", REDIRECT: "请修改接口地址", RATE: "请求过多，稍后重试", KEYCHAIN: "请重新设置接口" }[code] || "暂时无法读取额度";
+  return { AUTH: "API Key 无效", NETWORK: "网络连接失败", CONNECT: "无法连接 API 服务", TIMEOUT: "接口请求超时", DNS: "接口域名解析失败", FORMAT: "接口格式错误", SERVER: "服务端读取失败", REDIRECT: "请修改接口地址", RATE: "请求过多，稍后重试", KEYCHAIN: "请重新设置接口" }[code] || "暂时无法读取额度";
+}
+
+function networkErrorCode(error) {
+  // 只分类系统错误，不显示或保存可能含接口地址的原始错误正文。
+  const message = String(error?.message || error || "");
+  if (/\b(?:ETIMEDOUT|ESOCKETTIMEDOUT)\b|timed?\s*out|timeout|超时|逾時|(?:Code\s*=\s*|\b)-1001\b/i.test(message)) return "TIMEOUT";
+  if (/\b(?:ENOTFOUND|EAI_AGAIN)\b|hostname.*(?:not.*found|resolve)|could not find.*host|DNS|域名.*解析|找不到.*(?:主机|主機)|(?:Code\s*=\s*|\b)-100[36]\b/i.test(message)) return "DNS";
+  if (/\b(?:ECONNREFUSED|EHOSTUNREACH|ENETUNREACH)\b|refused|could not connect|cannot connect|unable to connect|无法连接.*服务器|無法連接.*伺服器|(?:Code\s*=\s*|\b)-1004\b/i.test(message)) return "CONNECT";
+  return "NETWORK";
 }
 
 function normalizeEndpoint(value) {
@@ -239,7 +271,7 @@ function readCache(store, now) {
       const entry = JSON.parse(store.fm.readString(store.paths[slot]));
       if (entry.version !== 1 || !Number.isSafeInteger(entry.revision) || entry.revision < 1 || nullableNumber(entry.receivedAt) === null || entry.receivedAt < 0 || entry.receivedAt > now + 60000) continue;
       entry.payload = entry.payload ? cleanPayload(entry.payload, now) : null;
-      entry.errorCode = ["AUTH", "NETWORK", "FORMAT", "SERVER", "REDIRECT", "RATE"].includes(entry.errorCode) ? entry.errorCode : null;
+      entry.errorCode = FETCH_ERROR_CODES.includes(entry.errorCode) ? entry.errorCode : null;
       entry.retryAt = nullableNumber(entry.retryAt) || 0;
       entries.push({ ...entry, slot });
     } catch (_) { /* 损坏的文件不覆盖另一份有效缓存。 */ }
@@ -271,8 +303,8 @@ async function fetchUsage(connection, force) {
   request.timeoutInterval = 20;
   let redirected = false;
   request.onRedirect = () => { redirected = true; return null; };
-  let raw, failed = false;
-  try { raw = await request.loadString(); } catch (_) { failed = true; }
+  let raw, failure;
+  try { raw = await request.loadString(); } catch (error) { failure = error; }
   const status = request.response?.statusCode;
   if (redirected || (status >= 300 && status < 400)) throw usageError("REDIRECT");
   if (status === 401 || status === 403) throw usageError("AUTH");
@@ -282,7 +314,7 @@ async function fetchUsage(connection, force) {
     throw error;
   }
   if (status >= 400) throw usageError("SERVER");
-  if (failed || !status) throw usageError("NETWORK");
+  if (failure || !status) throw usageError(networkErrorCode(failure));
   if (typeof raw !== "string" || raw.length > 500000) throw usageError("FORMAT");
   let body;
   try { body = JSON.parse(raw); } catch (_) { throw usageError("FORMAT"); }
@@ -303,7 +335,7 @@ async function loadUsage(settings, options = {}) {
   const oldSnapshot = cache?.payload ? snapshotFrom(cache.payload, settings) : null;
   const withError = (code, retryAt) => ({ ...(oldSnapshot || { updatedAt: null, windows: [] }), status: oldSnapshot ? "stale" : "error", errorCode: code, retryAt });
   if (cache?.errorCode && cache.retryAt > now && (!options.force || cache.errorCode === "RATE")) return withError(cache.errorCode, cache.retryAt);
-  const interval = settings.refreshMinutes * 60000;
+  const interval = settings.refreshSeconds * 1000;
   if (!options.force && cache?.payload && !cache.errorCode && now >= cache.receivedAt && now - cache.receivedAt < interval && now - timestamp(cache.payload.fetchedAt) < interval) return oldSnapshot;
   try {
     const payload = await fetchUsage(connection, options.force === true);
@@ -311,7 +343,7 @@ async function loadUsage(settings, options = {}) {
     const saved = writeCache(store, cache, { payload, receivedAt, errorCode: null, retryAt: 0 });
     return { ...snapshotFrom(payload, settings), cacheWarning: !saved };
   } catch (error) {
-    const code = ["AUTH", "NETWORK", "FORMAT", "SERVER", "REDIRECT", "RATE"].includes(error.code) ? error.code : "NETWORK";
+    const code = FETCH_ERROR_CODES.includes(error.code) ? error.code : "NETWORK";
     const retryAt = error.retryAt || Date.now() + 60000;
     const saved = writeCache(store, cache, { payload: cache?.payload || null, receivedAt: cache?.receivedAt || now, errorCode: code, retryAt });
     return { ...withError(code, retryAt), cacheWarning: !saved };
@@ -319,7 +351,10 @@ async function loadUsage(settings, options = {}) {
 }
 
 function scriptURL(settings, family, action) {
-  const safe = readSettings(JSON.stringify(settings));
+  const parsed = readSettings(JSON.stringify(settings));
+  // 刷新间隔只从本机设置读取，不放入点击、更新或恢复链接。
+  const safe = {};
+  for (const key of Object.keys(DEFAULTS)) safe[key] = parsed[key];
   let url = "scriptable:///run?scriptName=" + encodeURIComponent(Script.name()) + "&parameter=" + encodeURIComponent(JSON.stringify(safe));
   if (FAMILIES.includes(family)) url += "&family=" + family;
   if (action) url += "&action=" + encodeURIComponent(action);
@@ -529,7 +564,7 @@ function beijingTime(value, short) {
 function effectiveStatus(snapshot, settings, now) {
   if (snapshot.status !== "ready") return snapshot.status;
   const at = timestamp(snapshot.updatedAt);
-  if (at === null || at > now + 60000 || now - at >= Math.max(30, settings.refreshMinutes * 3) * 60000) return "stale";
+  if (at === null || at > now + 60000 || now - at >= Math.max(1800, settings.refreshSeconds * 3) * 1000) return "stale";
   return "ready";
 }
 
@@ -538,7 +573,8 @@ function footerLabel(snapshot, status, small) {
   const demo = snapshot.isDemo ? "示例 · " : "";
   if (timestamp(snapshot.updatedAt) === null) return demo + "尚无成功刷新";
   const time = beijingTime(snapshot.updatedAt, small);
-  const tag = snapshot.errorCode === "AUTH" ? "验证失败" : snapshot.errorCode === "RATE" ? "请求限流" : snapshot.errorCode ? "刷新失败" : status === "stale" ? "已过期" : snapshot.cacheWarning ? "未保存" : snapshot.restricted ? "受限" : "";
+  const errors = { AUTH: "验证失败", RATE: "请求限流", NETWORK: "网络失败", CONNECT: "连接失败", TIMEOUT: "请求超时", DNS: "域名异常", FORMAT: "格式异常", SERVER: "服务异常", REDIRECT: "地址跳转" };
+  const tag = snapshot.errorCode ? errors[snapshot.errorCode] || "刷新失败" : status === "stale" ? "已过期" : snapshot.cacheWarning ? "未保存" : snapshot.restricted ? "受限" : "";
   if (small) return demo + (tag ? time + " · " + tag : "更新 " + time);
   return demo + "上次刷新 " + time + (tag ? " · " + tag : "");
 }
@@ -629,7 +665,7 @@ function renderWidget(snapshot, settings, family, now = Date.now()) {
   const compact = !large && Math.min(screen.width, screen.height) < 390;
   widget.backgroundColor = colors.background;
   widget.setPadding(compact ? 12 : large ? 18 : 15, compact ? 12 : small ? 16 : 18, compact ? 8 : large ? 16 : 11, compact ? 12 : small ? 16 : 18);
-  widget.refreshAfterDate = new Date(Math.max(now + settings.refreshMinutes * 60000, snapshot.retryAt || 0));
+  widget.refreshAfterDate = new Date(Math.max(now + settings.refreshSeconds * 1000, snapshot.retryAt || 0));
   widget.url = widgetTapURL(settings, family);
   header(widget, family, colors, compact);
   widget.addSpacer(compact ? 6 : large ? 22 : small ? 8 : 10);
@@ -720,6 +756,24 @@ async function configureConnection() {
   }
 }
 
+async function configureRefresh() {
+  while (true) {
+    const form = new Alert();
+    form.title = "刷新间隔（秒）";
+    form.message = "填写 1–86400 之间的整数秒，例如 30 或 600（10 分钟）。保存到本机，对所有尺寸生效。此间隔用于缓存和申请刷新，实际刷新时机由 iOS 决定。";
+    form.addTextField("刷新间隔（秒）", String(readRefreshSeconds()));
+    form.addAction("保存并刷新");
+    form.addCancelAction("取消");
+    if (await form.presentAlert() < 0) return false;
+    try {
+      saveRefreshSeconds(form.textFieldValue(0));
+      return true;
+    } catch (error) {
+      await showMessage("设置未保存", error.message);
+    }
+  }
+}
+
 async function main() {
   let settings;
   try { settings = readSettings(args.widgetParameter || args.queryParameters?.parameter); }
@@ -745,18 +799,23 @@ async function main() {
     } else if (!force) {
       const menu = new Alert();
       menu.title = "Codex Usage · " + VERSION;
-      menu.message = "默认每 10 分钟申请刷新。立即刷新会请求服务端重新读取额度；桌面刷新时机由 iOS 决定。";
-      ["预览小号", "预览中号", "预览大号", "立即刷新", "设置接口 / API Key", "预览示例（不请求接口）", "一键更新脚本", "恢复更新前版本"].forEach(label => menu.addAction(label));
+      menu.message = "当前每 " + settings.refreshSeconds + " 秒申请刷新。立即刷新会请求服务端重新读取额度；桌面刷新时机由 iOS 决定。";
+      ["预览小号", "预览中号", "预览大号", "立即刷新", "设置接口 / API Key", "刷新间隔（" + settings.refreshSeconds + " 秒）", "预览示例（不请求接口）", "一键更新脚本", "恢复更新前版本"].forEach(label => menu.addAction(label));
       menu.addCancelAction("取消");
       const choice = await menu.presentSheet();
       if (choice < 0) return;
-      if (choice === 6) { await updateScript(settings, family); return; }
-      if (choice === 7) { await restoreScript(settings, family); return; }
+      if (choice === 7) { await updateScript(settings, family); return; }
+      if (choice === 8) { await restoreScript(settings, family); return; }
       family = FAMILIES[choice] || "medium";
-      settings = { ...settings, scenario: choice === 5 ? "demo" : "live" };
+      settings = { ...settings, scenario: choice === 6 ? "demo" : "live" };
       if (choice === 3) force = true;
       if (choice === 4) {
         if (!await configureConnection()) return;
+        force = true;
+      }
+      if (choice === 5) {
+        if (!await configureRefresh()) return;
+        settings = { ...settings, refreshSeconds: readRefreshSeconds() };
         force = true;
       }
     }
