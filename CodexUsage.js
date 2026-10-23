@@ -1,31 +1,39 @@
 // Variables used by Scriptable.
 // icon-color: blue; icon-glyph: chart-bar;
 // CODEX_USAGE_WIDGET
-// version: 1.0.1
+// version: 1.0.2
 // Codex Usage
 // 独立脚本：全部复制到 Scriptable，命名为 CodexUsage。
 // 首次运行设置 API Key。密钥仅保存到 Scriptable Keychain，不要写入脚本或组件参数。
 
-const VERSION = "1.0.1";
+const VERSION = "1.0.2";
 const REPOSITORY = "awesomehy/scriptable-codex-usage";
 const CONNECTION_KEY = "CodexUsage.connection.v1";
-const DEFAULTS = { theme: "light", scenario: "live", window: "auto", limitId: "codex", refreshMinutes: 10, tapAction: "script" };
+const DEFAULTS = { theme: "light", scenario: "live", window: "auto", limitId: "codex", refreshMinutes: 10, openURL: "" };
 const DEMO_NOW = Date.parse("2026-10-24T15:58:00Z");
 const FAMILIES = ["small", "medium", "large"];
 
 function readSettings(parameter) {
   const value = typeof parameter === "string" ? parameter.trim() : parameter;
   let input;
-  try { input = value == null || value === "" ? {} : typeof value === "string" && value.toLowerCase() === "chatgpt" ? { tapAction: "chatgpt" } : JSON.parse(value); }
-  catch (_) { throw new Error('Parameter 请填写 JSON 对象，或直接填写 ChatGPT。'); }
+  if (value == null || value === "") input = {};
+  else if (typeof value === "string" && /^[a-z][a-z0-9+.-]*:/i.test(value)) input = { openURL: value };
+  else {
+    try { input = JSON.parse(value); }
+    catch (_) { throw new Error("Parameter 请填写完整的应用跳转链接（如 myapp://），或 JSON 对象。"); }
+  }
   if (!input || Array.isArray(input) || typeof input !== "object") throw new Error("Parameter 请填写 JSON 对象。");
-  // 只允许显示参数进入组件 URL，防止误填的凭据被带入链接。
+  // 只传递允许的组件参数，不从连接设置读取接口地址或凭据。
   const settings = { ...DEFAULTS };
   for (const key of Object.keys(DEFAULTS)) if (Object.prototype.hasOwnProperty.call(input, key)) settings[key] = input[key];
   if (!["light", "dark", "auto"].includes(settings.theme)) throw new Error("theme 支持 light、dark、auto。");
   if (!["live", "demo", "empty", "stale", "error"].includes(settings.scenario)) throw new Error("scenario 支持 live、demo、empty、stale、error。");
   if (!["auto", "weekly", "session", "primary", "secondary"].includes(settings.window)) throw new Error("window 支持 auto、weekly、session、primary、secondary。");
-  if (!["script", "chatgpt"].includes(settings.tapAction)) throw new Error("tapAction 支持 script、chatgpt。");
+  if (typeof settings.openURL !== "string") throw new Error("openURL 请填写完整的应用跳转链接，或留空。");
+  settings.openURL = settings.openURL.trim();
+  if (settings.openURL && !/^[a-z][a-z0-9+.-]*:[^\s\u0000-\u001f\u007f]+$/i.test(settings.openURL)) {
+    throw new Error("openURL 需要完整的 URL Scheme（如 myapp://），链接内的空格请写成 %20。");
+  }
   if (typeof settings.limitId !== "string" || !/^[a-zA-Z0-9_.-]{1,80}$/.test(settings.limitId)) throw new Error("limitId 请填写接口中的额度标识。");
   if (!Number.isInteger(settings.refreshMinutes) || settings.refreshMinutes < 1 || settings.refreshMinutes > 1440) {
     throw new Error("refreshMinutes 请填写 1–1440 之间的整数。");
@@ -319,7 +327,7 @@ function scriptURL(settings, family, action) {
 }
 
 function widgetTapURL(settings, family) {
-  return settings.tapAction === "chatgpt" ? "chatgpt://" : scriptURL(settings, family);
+  return settings.openURL || scriptURL(settings, family);
 }
 
 async function showMessage(title, message) {

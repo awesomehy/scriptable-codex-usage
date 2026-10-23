@@ -1,6 +1,6 @@
 {
   "id": "codex-usage-widget",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "script": "CodexUsage.js",
-  "sha256": "88f788cce76c278b74765df920e30ca887220ade051d638744144ceece9408a2"
+  "sha256": "42e5951407a08c38a83869289575b66d40cf84ead1770bf8e1599f7918ccf348"
 }

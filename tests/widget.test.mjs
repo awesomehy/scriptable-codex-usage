@@ -77,22 +77,43 @@ test('defaults use live data; credentials and endpoint are excluded from widget 
   assert.throws(() => api.readSettings('{"refreshMinutes":0}'));
 });
 
-test('ChatGPT shorthand and JSON configure app taps without changing update links', () => {
+test('URL parameters configure arbitrary app taps and survive encoded update links', () => {
   const { api, settings } = harness();
-  assert.equal(settings.tapAction, 'script');
-  for (const parameter of ['ChatGPT', '  chatgpt  ', '{"tapAction":"chatgpt","theme":"dark"}']) {
+  assert.equal(settings.openURL, '');
+  const cases = [
+    ['chatgpt://', 'chatgpt://'],
+    ['  myapp://  ', 'myapp://'],
+    ['Demo.App+test://item/123?name=hello%20world&next=a%2Bb#details', 'Demo.App+test://item/123?name=hello%20world&next=a%2Bb#details'],
+    ['https://example.test/path?q=a%26b#section', 'https://example.test/path?q=a%26b#section'],
+    ['mailto:user@example.test', 'mailto:user@example.test'],
+    ['{"openURL":"  myapp://item?id=123  ","theme":"dark"}', 'myapp://item?id=123'],
+  ];
+  for (const [parameter, target] of cases) {
     const parsed = api.readSettings(parameter);
-    assert.equal(parsed.tapAction, 'chatgpt');
+    assert.equal(parsed.openURL, target);
     assert.equal(parsed.scenario, 'live');
-    assert.equal(api.widgetTapURL(parsed, 'small'), 'chatgpt://');
+    assert.equal(api.widgetTapURL(parsed, 'small'), target);
     const update = new URL(api.scriptURL(parsed, 'medium', 'update'));
     assert.equal(update.protocol, 'scriptable:');
     assert.equal(update.searchParams.get('action'), 'update');
-    assert.equal(JSON.parse(update.searchParams.get('parameter')).tapAction, 'chatgpt');
+    const restored = api.readSettings(update.searchParams.get('parameter'));
+    assert.equal(api.widgetTapURL(restored, 'medium'), target);
   }
   assert.match(api.widgetTapURL(settings, 'small'), /^scriptable:/);
-  assert.throws(() => api.readSettings('SomeApp'), /JSON 对象/);
-  assert.throws(() => api.readSettings('{"tapAction":"other"}'), /tapAction/);
+  assert.equal(api.readSettings('{"openURL":"myapp://","theme":"dark"}').theme, 'dark');
+  assert.match(api.widgetTapURL(api.readSettings('{"openURL":"  "}'), 'small'), /^scriptable:/);
+  assert.equal(api.readSettings('{"tapAction":"chatgpt"}').openURL, '');
+});
+
+test('app names and malformed URL parameters give useful validation errors', () => {
+  const { api } = harness();
+  for (const value of ['ChatGPT', 'SomeApp', 'example.test', '{broken']) {
+    assert.throws(() => api.readSettings(value), /完整的应用跳转链接/);
+  }
+  for (const value of ['myapp:', 'myapp://hello world', 'myapp://bad\npath', 'myapp://bad\u0000path', '1app://', '//example.test', 'ChatGPT', 123, null]) {
+    assert.throws(() => api.readSettings(JSON.stringify({ openURL: value })), /openURL/);
+  }
+  for (const value of ['null', '[]', '"myapp://"']) assert.throws(() => api.readSettings(value), /JSON 对象/);
 });
 
 test('reset countdown rounds days and uses hours plus minutes below 24 hours', () => {
@@ -297,7 +318,8 @@ test('update pins both files to one commit, verifies backup, and launches the ne
   const files = new Map([['/documents/CodexUsage.js', fullSource]]);
   const h = harness({ responses: updateResponses(), files, cloud: true });
   const connection = h.keys.get('CodexUsage.connection.v1');
-  await h.api.updateScript({ ...h.settings, theme: 'dark' }, 'large');
+  const target = 'myapp://view?title=hello%20world&next=a%2Bb#details';
+  await h.api.updateScript({ ...h.settings, theme: 'dark', openURL: target }, 'large');
   assert.equal(h.files.get('/documents/CodexUsage.js'), nextSource);
   assert.equal(h.calls.length, 3);
   assert.ok(h.calls.slice(1).every(call => call.url.endsWith('?ref=' + 'a'.repeat(40))));
@@ -308,6 +330,8 @@ test('update pins both files to one commit, verifies backup, and launches the ne
   assert.equal(url.searchParams.get('action'), 'refresh');
   assert.equal(url.searchParams.get('family'), 'large');
   assert.equal(JSON.parse(url.searchParams.get('parameter')).theme, 'dark');
+  assert.equal(JSON.parse(url.searchParams.get('parameter')).openURL, target);
+  assert.equal(url.protocol, 'scriptable:');
   assert.ok(!h.launches[0].includes(KEY));
   assert.equal(h.downloads.length, 1);
   const backup = [...h.files.entries()].find(([path]) => /backup-.*\.json$/.test(path));
@@ -337,7 +361,7 @@ test('restore validates and recovers the previous script without changing creden
 });
 
 test('refresh launch bypasses menus and performs exactly one forced quota read', async () => {
-  const h = harness({ responses: [{}], extra: { args: { queryParameters: { action: 'refresh', family: 'large', parameter: '{"theme":"dark","scenario":"demo"}' } } } });
+  const h = harness({ responses: [{}], extra: { args: { queryParameters: { action: 'refresh', family: 'large', parameter: '{"theme":"dark","scenario":"demo","openURL":"myapp://"}' } } } });
   let rendered, presented = 0;
   h.api.setRenderer((snapshot, settings, family) => {
     rendered = { snapshot, settings, family };
@@ -348,6 +372,7 @@ test('refresh launch bypasses menus and performs exactly one forced quota read',
   assert.equal(h.calls[0].url, PROFILE.endpoint + '?refresh=1');
   assert.equal(rendered.settings.scenario, 'live');
   assert.equal(rendered.settings.theme, 'dark');
+  assert.equal(rendered.settings.openURL, 'myapp://');
   assert.equal(rendered.family, 'large');
   assert.equal(presented, 1);
 });

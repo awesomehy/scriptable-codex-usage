@@ -1,6 +1,6 @@
 # Codex Usage · Scriptable 额度组件
 
-版本 **1.0.1**。按提供的 ChatGPT 原版截图制作，支持自建 Codex 额度 API；默认显示真实数据。支持小号、中号、大号，以及浅色、深色和跟随系统。
+版本 **1.0.2**。按提供的 ChatGPT 原版截图制作，支持自建 Codex 额度 API；默认显示真实数据。支持小号、中号、大号，以及浅色、深色和跟随系统。
 
 [查看脚本](https://github.com/awesomehy/scriptable-codex-usage/blob/main/CodexUsage.js) · [下载源码](https://raw.githubusercontent.com/awesomehy/scriptable-codex-usage/main/CodexUsage.js)
 
@@ -14,7 +14,7 @@
 
 接口地址和 API Key 一起保存到本机 [Scriptable Keychain](https://docs.scriptable.app/keychain/)，不写入脚本、组件参数、预览页面或额度缓存。以后替换脚本代码时，已保存的连接设置会保留。HTTP 不加密传输；接口支持时请使用 HTTPS。
 
-点击桌面组件会打开脚本菜单，可预览三个尺寸、**立即刷新**或修改接口 / API Key。保存设置后会读取一次真实额度并显示中号预览。
+Parameter 留空时，点击桌面组件会打开脚本菜单，可预览三个尺寸、**立即刷新**或修改接口 / API Key。保存设置后会读取一次真实额度并显示中号预览。
 
 ## 一键更新
 
@@ -42,7 +42,7 @@
 
 ## 参数
 
-桌面组件的 Parameter 接受 JSON，例如：
+桌面组件的 Parameter 可以直接填写应用跳转链接（如 `chatgpt://`），也接受 JSON，例如：
 
 ```json
 {"theme":"dark","window":"weekly"}
@@ -55,19 +55,21 @@
 | `limitId` | `codex` | 精确选择 `limits` 中的额度组，不混用其他模型额度 |
 | `refreshMinutes` | `10` | 1–1440 的整数；本地缓存和申请刷新间隔 |
 | `scenario` | `live` | `live` 为真实数据；`demo` / `stale` / `empty` / `error` 用于不联网的界面预览 |
-| `tapAction` | `script` | `script` 打开脚本菜单；`chatgpt` 通过 `chatgpt://` 打开已安装的 ChatGPT App |
+| `openURL` | 空字符串 | 点击组件时打开的链接；留空打开脚本菜单 |
 
-### 点击打开 ChatGPT
+### 点击打开 App
 
-先在 Scriptable 内运行脚本 → **一键更新脚本**，升级到 v1.0.1 或更新版本。然后长按桌面组件 → 编辑小组件，在 **Parameter** 直接填写 `ChatGPT`（不用引号）。也可使用 JSON 与其他参数组合：
+先在 Scriptable 内运行脚本 → **一键更新脚本**，升级到 v1.0.2 或更新版本。然后长按桌面组件 → 编辑小组件，在 **Parameter** 直接填写目标 App 支持的完整 URL Scheme，例如 `chatgpt://`（不用引号）。脚本将链接交给 iOS 打开，不按 App 名称做映射。也可使用 JSON 与其他参数组合：
 
 ```json
-{"tapAction":"chatgpt","theme":"light"}
+{"openURL":"chatgpt://","theme":"light"}
 ```
 
-“When Interacting” 可以保留 Open App。脚本设置的点击链接会优先于该选项，见 [Scriptable 的 url 说明](https://docs.scriptable.app/listwidget/#url)。点击主体打开 ChatGPT；中号、大号右下角的更新链接仍打开脚本更新。小号需要从 Scriptable App 内运行脚本来修改配置或更新。
+“When Interacting” 可以保留 Open App。脚本设置的点击链接会优先于该选项，见 [Scriptable 的 url 说明](https://docs.scriptable.app/listwidget/#url)。点击主体打开填写的链接；中号、大号右下角的更新链接仍打开脚本更新。小号需要从 Scriptable App 内运行脚本来修改配置或更新。
 
-需要 iPhone 已安装 ChatGPT。跳转使用 App URL Scheme，实际唤起行为需在 iPhone 上确认。默认 Parameter 留空时仍打开脚本菜单。
+需要 iPhone 已安装相应 App，且该 App 支持填写的 URL Scheme；实际唤起行为需在 iPhone 上确认。链接中的路径、查询参数及片段会保留，空格请写成 `%20`。也可填写 `https://` 网页链接，由 iOS 决定打开网页或关联 App。Parameter 留空时打开脚本菜单。
+
+从 v1.0.1 升级时，请把原来的纯名称 `ChatGPT` 改为 `chatgpt://`；使用 JSON 时，将 `tapAction` 改为 `openURL` 并填写完整链接。新版不再识别 App 名称或 `tapAction`。
 
 `session` 选择实际存在的、短于一周的最短周期，不会虚构缺失的窗口。显式选择的周期不存在时显示“此额度窗口暂无数据”。演示场景会标注“示例”，日期固定为 2026-10-24，不能当作实时额度。不要在 Parameter 中填写 API Key 或接口地址；在脚本设置菜单中管理它们。
 
