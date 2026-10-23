@@ -1,10 +1,62 @@
-# Codex Usage · Scriptable 额度组件
+# Codex Usage · Scriptable 小组件与本地 API
 
-版本 **1.0.2**。按提供的 ChatGPT 原版截图制作，支持自建 Codex 额度 API；默认显示真实数据。支持小号、中号、大号，以及浅色、深色和跟随系统。
+在 iPhone 桌面查看 Codex 账号额度。仓库同时包含 **Scriptable 小组件**和配套的 **Node.js 本地 API**：电脑读取当前登录账号的额度，手机通过自己的服务地址读取并展示。小组件版本 **1.0.2**，支持小号、中号、大号，以及浅色、深色和跟随系统。
 
 [查看脚本](https://github.com/awesomehy/scriptable-codex-usage/blob/main/CodexUsage.js) · [下载源码](https://raw.githubusercontent.com/awesomehy/scriptable-codex-usage/main/CodexUsage.js)
 
-## 安装或升级
+## 项目结构
+
+```text
+CodexUsage.js             iPhone / Scriptable 小组件
+update.json              小组件更新清单与源码校验值
+server/                  配套额度 API，无第三方 npm 依赖
+  config.example.json    通用配置模板，不含私人地址或密钥
+  src/                   HTTP 服务与 Codex 读取逻辑
+  scripts/               Windows 后台启动、停止脚本
+  test/                  API 与 Codex 通信测试
+tests/                   小组件及前后端数据契约测试
+scripts/                 小组件预览、更新清单生成脚本
+```
+
+数据流：**电脑上已登录的 Codex → 本地 API → Scriptable → iOS 桌面小组件**。展示的是当前账号共享额度，不是这台电脑单独消耗的 token 数；服务只查询额度，不发起模型对话。
+
+## 1. 部署配套 API
+
+需要 Node.js **22 或以上**，以及已通过 ChatGPT 登录、能够联网的 Codex。Windows 提供后台启停脚本；其他系统可以直接使用 Node.js 前台运行，具体 Codex 安装和登录以本机环境为准。
+
+```powershell
+git clone https://github.com/awesomehy/scriptable-codex-usage.git
+cd scriptable-codex-usage\server
+Copy-Item config.example.json config.json
+node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
+```
+
+最后一条命令生成供本服务使用的随机 Key。编辑刚创建的 `server/config.json`：将 `host` 改为 `0.0.0.0`，将 `apiKey` 设为生成的值（至少 **24 个字符**），端口默认 `58321`。保留其他字段。不要用 Codex 登录令牌作为 API Key，也不要把个人配置提交到 GitHub。
+
+启动服务：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
+# 或使用前台方式：node src/server.mjs
+```
+
+从服务端本机测试，Key 自动读取自配置：
+
+```powershell
+$config = Get-Content -Raw .\config.json | ConvertFrom-Json
+Invoke-RestMethod 'http://localhost:58321/health'
+Invoke-RestMethod 'http://localhost:58321/api/usage' -Headers @{
+    Authorization = "Bearer $($config.apiKey)"
+}
+```
+
+小组件所在的手机需要能访问这台电脑。局域网内使用电脑的局域网地址；跨网络时配置你自己的域名、路由器 TCP 端口转发及防火墙，并为公网入口配置 HTTPS。`localhost` 在手机上指手机本身，不能作为电脑的访问地址。
+
+手机中填写的完整接口地址类似 `https://codex-api.example.com/api/usage`，该地址仅为占位示例，仓库不提供公共额度服务。域名、端口和协议应替换为自己的部署值。浏览器直接访问额度接口缺少 Bearer 请求头时会返回 `401`，可先访问 `/health` 检查连通性。
+
+详细配置、接口字段、调用示例和排错见 **[API 部署与使用文档](server/README.md)**。电脑需保持开机且服务运行；当前后台脚本不设置 Windows 开机自启。
+
+## 2. 安装或升级 Scriptable 小组件
 
 1. 复制同目录 `CodexUsage.js` 的全部内容。
 2. 在 iPhone 的 Scriptable 中新建 **CodexUsage**；如果已经安装，打开原脚本，替换全部内容并保存。
@@ -24,7 +76,7 @@ Parameter 留空时，点击桌面组件会打开脚本菜单，可预览三个�
 
 更新成功后重新运行新版脚本，自动强制读取一次额度并显示预览。接口地址、密钥和桌面参数保留。桌面组件的实际重绘时机仍由 iOS 控制。更新只请求 GitHub 公共资源，不向 GitHub 发送额度接口凭据；无法访问 GitHub 时可手动复制完整源码覆盖原脚本。
 
-仓库不包含私人接口地址、API Key 或私钥；仅保留代码、通用测试样例、发布清单及示例预览。个人连接配置仅在手机首次运行时填写。
+仓库只发布代码、通用配置模板、测试样例、发布清单和示例预览。服务端个人配置保存在被 Git 忽略的 `server/config.json`；手机连接设置保存在 Scriptable Keychain。小组件的一键更新只更新 `CodexUsage.js`，服务端需要单独更新并重启。
 
 ## 显示和刷新
 
@@ -85,15 +137,32 @@ Parameter 留空时，点击桌面组件会打开脚本菜单，可预览三个�
 
 ## 开发验证
 
+Node.js 22+，无 npm 依赖，无需执行 `npm install`。在仓库根目录执行：
+
 ```sh
 npm test
+npm run test:server
 npm run preview
 npm run check:release
 node --check CodexUsage.js
 ```
 
-自动测试覆盖鉴权、窗口映射、缓存命中、强制刷新、未知值、超时、格式错误、重定向、限流、凭据切换和缓存写入失败。测试使用模拟响应，不包含真实密钥。
+`npm test` 同时运行小组件和 API 测试；`npm run test:widget` / `npm run test:server` 可分别运行。自动测试覆盖鉴权、窗口映射、缓存命中、强制刷新、未知值、超时、格式错误、重定向、限流、凭据切换、缓存写入失败和 API 响应与小组件的兼容性。测试使用模拟响应，无需 Codex 登录或真实密钥。
 
 发布新版本时，修改脚本顶部版本标记和 `VERSION`，运行 `npm run release` 生成 `update.json`，将源码与清单在同一提交中推送。不要将个人配置文件加入仓库。
 
 `preview.html` 是由实际渲染函数生成的交互式界面预览，使用明确标注的示例数据，不访问接口。浏览器的字体和布局与 iOS 会有差异，最终显示需要在 iPhone 的 Scriptable 中确认。
+
+## 隐私与故障排查
+
+个人 API Key、服务地址、内网 IP 和本机安装路径应只写入私有配置。`.gitignore` 已排除 `config.json`、`.env*`、`.runtime/`、日志、密钥文件和依赖目录；配置模板中的回环地址和文档中的 `example.com` 地址是通用示例。
+
+| 现象 | 处理 |
+| --- | --- |
+| 手机连接超时 | 先用手机访问自己部署的 `/health`，检查电脑是否开机、服务是否运行、网络地址和端口转发是否正确。 |
+| `401` / 验证失败 | 核对手机设置中的 API Key；更换服务端 Key 后重启服务，并更新手机保存的 Key。 |
+| `502` / `503` / `504` | 查看 API 返回的错误码和服务端日志，检查 Codex 登录、可执行文件和联网状态。 |
+| 小组件仍显示旧数据 | 在脚本菜单选择“立即刷新”，核对 API 的 `fetchedAt`；iOS 桌面实际重绘由系统调度。 |
+| 修改 Key 后未生效 | 重启 API；检查服务端环境变量 `CODEX_USAGE_API_KEY` 是否覆盖了配置文件。 |
+
+HTTP 会明文传输 Key 和额度数据，公网部署应使用 HTTPS。不要将带真实凭据的配置、日志或截图加入仓库。

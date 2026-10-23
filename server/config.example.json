@@ -1,0 +1,9 @@
+{
+  "host": "127.0.0.1",
+  "port": 58321,
+  "cacheTtlSeconds": 30,
+  "timeoutSeconds": 20,
+  "codexPath": "",
+  "apiKey": "",
+  "allowedOrigins": []
+}

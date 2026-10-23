@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { createUsageService } from '../server/src/server.mjs';
 
 const fullSource = await readFile(new URL('../CodexUsage.js', import.meta.url), 'utf8');
 const source = fullSource.replace('try { await main(); } finally { Script.complete(); }', '');
@@ -65,6 +66,35 @@ function harness({ configured = true, responses = [], files = new Map(), failWri
   });
   return { api, calls, keys, files, responses, messages, launches, downloads, widgets, setNow: value => { now = value; }, setWriteFailure: value => { failWrites = value; }, setCorruptWrites: value => { corruptWrites = value; }, settings: api.readSettings('') };
 }
+
+test('companion HTTP API returns quota that the widget can display', async t => {
+  const service = createUsageService({
+    host: '127.0.0.1', port: 0, cacheTtlSeconds: 30, timeoutSeconds: 2,
+    apiKey: KEY, allowedOrigins: [],
+  }, async () => ({
+    ordinaryUsageAllowed: true,
+    rateLimitResetCredits: { availableCount: 2 },
+    rateLimitsByLimitId: { codex: {
+      primary: { usedPercent: 35, windowDurationMins: 10080, resetsAt: 1893456000 },
+      secondary: null,
+    } },
+  }));
+  await new Promise(resolve => service.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => service.close());
+  const url = `http://127.0.0.1:${service.server.address().port}/api/usage`;
+  assert.equal((await fetch(url)).status, 401);
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${KEY}` } });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  const h = harness();
+  h.setNow(Date.now());
+  const snapshot = h.api.snapshotFrom(h.api.cleanPayload(payload), h.settings);
+  assert.equal(snapshot.windows.length, 1);
+  assert.equal(snapshot.windows[0].remainingPercent, 65);
+  assert.equal(snapshot.windows[0].label, 'Weekly');
+  assert.equal(snapshot.availableResetCount, 2);
+  assert.ok(!JSON.stringify(payload).includes(KEY));
+});
 
 test('defaults use live data; credentials and endpoint are excluded from widget parameters', () => {
   const { api, settings } = harness();

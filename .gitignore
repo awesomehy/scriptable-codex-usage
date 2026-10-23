@@ -10,3 +10,6 @@ secrets.*
 *.pem
 *.log
 *.tmp
+.runtime/
+auth.json
+*.pid
