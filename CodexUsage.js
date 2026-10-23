@@ -1,12 +1,12 @@
 // Variables used by Scriptable.
 // icon-color: blue; icon-glyph: chart-bar;
 // CODEX_USAGE_WIDGET
-// version: 1.0.3
+// version: 1.0.4
 // Codex Usage
 // 独立脚本：全部复制到 Scriptable，命名为 CodexUsage。
 // 首次运行设置 API Key。密钥仅保存到 Scriptable Keychain，不要写入脚本或组件参数。
 
-const VERSION = "1.0.3";
+const VERSION = "1.0.4";
 const REPOSITORY = "awesomehy/scriptable-codex-usage";
 const CONNECTION_KEY = "CodexUsage.connection.v1";
 const PREFERENCES_KEY = "CodexUsage.preferences.v1";
@@ -15,6 +15,7 @@ const DEFAULTS = { theme: "light", scenario: "live", window: "auto", limitId: "c
 const FETCH_ERROR_CODES = ["AUTH", "NETWORK", "CONNECT", "TIMEOUT", "DNS", "FORMAT", "SERVER", "REDIRECT", "RATE"];
 const DEMO_NOW = Date.parse("2026-10-24T15:58:00Z");
 const FAMILIES = ["small", "medium", "large"];
+const LAYOUTS = { original: "原版浅色", dark: "简洁深色", gradient: "渐变卡片", dashboard: "仪表盘" };
 
 function readSettings(parameter) {
   const value = typeof parameter === "string" ? parameter.trim() : parameter;
@@ -38,7 +39,45 @@ function readSettings(parameter) {
     throw new Error("openURL 需要完整的 URL Scheme（如 myapp://），链接内的空格请写成 %20。");
   }
   if (typeof settings.limitId !== "string" || !/^[a-zA-Z0-9_.-]{1,80}$/.test(settings.limitId)) throw new Error("limitId 请填写接口中的额度标识。");
-  return { ...settings, refreshSeconds: readRefreshSeconds() };
+  if (input.layout !== undefined && (typeof input.layout !== "string" || !Object.prototype.hasOwnProperty.call(LAYOUTS, input.layout))) throw new Error("layout 支持 original、dark、gradient、dashboard。");
+  return { ...settings, refreshSeconds: readRefreshSeconds(), layout: input.layout ?? readLayout(), layoutOverride: input.layout ?? null };
+}
+
+function readPreferences() {
+  try {
+    const value = Keychain.contains(PREFERENCES_KEY) ? JSON.parse(Keychain.get(PREFERENCES_KEY)) : {};
+    if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  } catch (_) { /* 首次运行或设置损坏时使用默认值。 */ }
+  return {};
+}
+
+function savePreference(key, value) {
+  // 合并保存，切换外观不会覆盖刷新秒数，修改刷新秒数也不会清除外观。
+  Keychain.set(PREFERENCES_KEY, JSON.stringify({ ...readPreferences(), [key]: value }));
+}
+
+function readLayout() {
+  const layout = readPreferences().layout;
+  return typeof layout === "string" && Object.prototype.hasOwnProperty.call(LAYOUTS, layout) ? layout : "original";
+}
+
+function saveLayout(layout) {
+  if (typeof layout !== "string" || !Object.prototype.hasOwnProperty.call(LAYOUTS, layout)) throw new Error("无效的外观布局。");
+  try { savePreference("layout", layout); }
+  catch (_) { throw new Error("外观布局未能保存到本机，请重试。"); }
+}
+
+async function configureLayout() {
+  const menu = new Alert();
+  menu.title = "外观布局";
+  menu.message = "保存到本机，所有尺寸共用。单个组件可用 Parameter 的 layout 字段覆盖。";
+  const layouts = Object.keys(LAYOUTS), current = readLayout();
+  layouts.forEach(id => menu.addAction((id === current ? "✓ " : "") + LAYOUTS[id]));
+  menu.addCancelAction("取消");
+  const index = await menu.presentSheet();
+  if (index < 0 || !layouts[index]) return null;
+  try { saveLayout(layouts[index]); return layouts[index]; }
+  catch (error) { await showMessage("设置未保存", error.message); return null; }
 }
 
 function validRefreshSeconds(value) {
@@ -46,19 +85,15 @@ function validRefreshSeconds(value) {
 }
 
 function readRefreshSeconds() {
-  try {
-    if (Keychain.contains(PREFERENCES_KEY)) {
-      const value = JSON.parse(Keychain.get(PREFERENCES_KEY));
-      if (validRefreshSeconds(value?.refreshSeconds)) return value.refreshSeconds;
-    }
-  } catch (_) { /* 首次运行或本地设置不可读时使用默认间隔。 */ }
+  const value = readPreferences();
+  if (validRefreshSeconds(value.refreshSeconds)) return value.refreshSeconds;
   return DEFAULT_REFRESH_SECONDS;
 }
 
 function saveRefreshSeconds(value) {
   const text = String(value).trim(), seconds = Number(text);
   if (!/^\d+$/.test(text) || !validRefreshSeconds(seconds)) throw new Error("请填写 1–86400 之间的整数秒。");
-  try { Keychain.set(PREFERENCES_KEY, JSON.stringify({ refreshSeconds: seconds })); }
+  try { savePreference("refreshSeconds", seconds); }
   catch (_) { throw new Error("刷新间隔未能保存到本机，请重试。"); }
   return seconds;
 }
@@ -355,6 +390,7 @@ function scriptURL(settings, family, action) {
   // 刷新间隔只从本机设置读取，不放入点击、更新或恢复链接。
   const safe = {};
   for (const key of Object.keys(DEFAULTS)) safe[key] = parsed[key];
+  if (settings.layoutOverride != null) safe.layout = parsed.layout;
   let url = "scriptable:///run?scriptName=" + encodeURIComponent(Script.name()) + "&parameter=" + encodeURIComponent(JSON.stringify(safe));
   if (FAMILIES.includes(family)) url += "&family=" + family;
   if (action) url += "&action=" + encodeURIComponent(action);
@@ -513,6 +549,65 @@ function palette(theme) {
   };
 }
 
+function layoutColors(settings) {
+  const colors = palette(settings.layout === "dark" ? "dark" : settings.theme);
+  if (settings.layout === "gradient") {
+    for (const [key, hex] of Object.entries({ background: "164CA7", text: "FFFFFF", secondary: "D9E7FF", muted: "C5D8F9", track: "426AB2", blue: "FFFFFF", warning: "FFE3A1" })) colors[key] = new Color(hex);
+  }
+  return colors;
+}
+
+function quotaRing(value, colors, diameter) {
+  const ctx = new DrawContext();
+  ctx.size = new Size(diameter, diameter);
+  ctx.opaque = false;
+  ctx.respectScreenScale = true;
+  ctx.setLineWidth(6);
+  const arc = (fraction, color) => {
+    const path = new Path(), steps = Math.max(1, Math.ceil(100 * fraction));
+    for (let i = 0; i <= steps; i++) {
+      const angle = -Math.PI / 2 + i / steps * fraction * Math.PI * 2;
+      const point = new Point(diameter / 2 + Math.cos(angle) * (diameter / 2 - 5), diameter / 2 + Math.sin(angle) * (diameter / 2 - 5));
+      if (!i) path.move(point); else path.addLine(point);
+    }
+    ctx.setStrokeColor(color); ctx.addPath(path); ctx.strokePath();
+  };
+  arc(1, colors.track);
+  const valid = percentValue(value);
+  if (valid !== null && valid > 0) arc(valid / 100, colors.blue);
+  ctx.setFont(Font.systemFont(diameter < 70 ? 16 : 22));
+  ctx.setTextColor(colors.text);
+  ctx.setTextAlignedCenter();
+  ctx.drawTextInRect(percentLabel(value).replace(" left", ""), new Rect(5, diameter / 2 - (diameter < 70 ? 10 : 14), diameter - 10, 30));
+  return ctx.getImage();
+}
+
+function dashboardBlock(parent, entry, family, colors, now, compact) {
+  const small = family === "small";
+  const diameter = small ? 52 : compact ? 68 : 78;
+  if (small) {
+    text(parent, entry.label || "Usage", 11, colors.secondary);
+    parent.addSpacer(3);
+  }
+  const row = parent.addStack();
+  row.centerAlignContent();
+  const ring = row.addImage(quotaRing(entry.remainingPercent, colors, diameter));
+  ring.imageSize = new Size(diameter, diameter);
+  row.addSpacer(small ? 8 : 16);
+  const detail = row.addStack(); detail.layoutVertically();
+  text(detail, small ? "left" : entry.label || "Usage", small ? 12 : 13, colors.secondary);
+  if (!small) {
+    detail.addSpacer(5);
+    text(detail, percentLabel(entry.remainingPercent), 25, colors.text);
+    detail.addSpacer(5);
+    text(detail, resetLabel(entry.resetsAt, now), 10.5, colors.muted);
+  }
+  if (small) {
+    parent.addSpacer(4);
+    text(parent, resetLabel(entry.resetsAt, now).replace("重置时间已到 · 待刷新", "已到重置时间"), 10, colors.muted);
+  }
+}
+
 function text(parent, value, size, color) {
   const item = parent.addText(String(value));
   item.font = Font.systemFont(size);
@@ -659,11 +754,18 @@ function quotaBlock(parent, entry, family, colors, now, compact) {
 
 function renderWidget(snapshot, settings, family, now = Date.now()) {
   const widget = new ListWidget();
-  const colors = palette(settings.theme);
+  const colors = layoutColors(settings);
   const small = family === "small", large = family === "large";
   const screen = Device.screenSize();
   const compact = !large && Math.min(screen.width, screen.height) < 390;
   widget.backgroundColor = colors.background;
+  if (settings.layout === "gradient") {
+    const background = new LinearGradient();
+    background.colors = [new Color("3479DB"), new Color("193C87")];
+    background.locations = [0, 1];
+    background.startPoint = new Point(0, 0); background.endPoint = new Point(1, 1);
+    widget.backgroundGradient = background;
+  }
   widget.setPadding(compact ? 12 : large ? 18 : 15, compact ? 12 : small ? 16 : 18, compact ? 8 : large ? 16 : 11, compact ? 12 : small ? 16 : 18);
   widget.refreshAfterDate = new Date(Math.max(now + settings.refreshSeconds * 1000, snapshot.retryAt || 0));
   widget.url = widgetTapURL(settings, family);
@@ -686,7 +788,8 @@ function renderWidget(snapshot, settings, family, now = Date.now()) {
         divider.addSpacer();
         widget.addSpacer(18);
       }
-      quotaBlock(widget, shown[i], family, colors, referenceNow, compact);
+      if (settings.layout === "dashboard") dashboardBlock(widget, shown[i], family, colors, referenceNow, compact);
+      else quotaBlock(widget, shown[i], family, colors, referenceNow, compact);
     }
     if (large && shown.length === 1 && !snapshot.isDemo) {
       widget.addSpacer(24);
@@ -800,7 +903,7 @@ async function main() {
       const menu = new Alert();
       menu.title = "Codex Usage · " + VERSION;
       menu.message = "当前每 " + settings.refreshSeconds + " 秒申请刷新。立即刷新会请求服务端重新读取额度；桌面刷新时机由 iOS 决定。";
-      ["预览小号", "预览中号", "预览大号", "立即刷新", "设置接口 / API Key", "刷新间隔（" + settings.refreshSeconds + " 秒）", "预览示例（不请求接口）", "一键更新脚本", "恢复更新前版本"].forEach(label => menu.addAction(label));
+      ["预览小号", "预览中号", "预览大号", "立即刷新", "设置接口 / API Key", "刷新间隔（" + settings.refreshSeconds + " 秒）", "预览示例（不请求接口）", "一键更新脚本", "恢复更新前版本", "外观布局（" + LAYOUTS[settings.layout] + "）"].forEach(label => menu.addAction(label));
       menu.addCancelAction("取消");
       const choice = await menu.presentSheet();
       if (choice < 0) return;
@@ -817,6 +920,11 @@ async function main() {
         if (!await configureRefresh()) return;
         settings = { ...settings, refreshSeconds: readRefreshSeconds() };
         force = true;
+      }
+      if (choice === 9) {
+        const layout = await configureLayout();
+        if (!layout) return;
+        settings = { ...settings, layout, layoutOverride: null };
       }
     }
   }

@@ -36,7 +36,7 @@ function harness({ configured = true, responses = [], files = new Map(), failWri
     isFileStoredIniCloud: () => cloud,
     downloadFileFromiCloud: async path => downloads.push(path),
   };
-  const api = vm.runInNewContext(`${source}\n;({readSettings, readRefreshSeconds, saveRefreshSeconds, configureRefresh, cleanPayload, snapshotFrom, chooseWindows, loadUsage, readConnection, saveConnection, normalizeEndpoint, footerLabel, effectiveStatus, fetchUsage, retryTime, configureConnection, main, sha256, validateUpdate, newerVersion, updateScript, restoreScript, replaceScript, scriptURL, widgetTapURL, resetLabel, beijingTime, setRenderer: fn => {renderWidget = fn;}})`, {
+  const api = vm.runInNewContext(`${source}\n;({readSettings, readLayout, saveLayout, configureLayout, readRefreshSeconds, saveRefreshSeconds, configureRefresh, cleanPayload, snapshotFrom, chooseWindows, loadUsage, readConnection, saveConnection, normalizeEndpoint, footerLabel, effectiveStatus, fetchUsage, retryTime, configureConnection, main, sha256, validateUpdate, newerVersion, updateScript, restoreScript, replaceScript, scriptURL, widgetTapURL, resetLabel, beijingTime, setRenderer: fn => {renderWidget = fn;}})`, {
     Date: Clock,
     UUID: { string: () => 'test-new-cache-000' + ++uid },
     Keychain: {
@@ -74,6 +74,41 @@ function harness({ configured = true, responses = [], files = new Map(), failWri
   });
   return { api, calls, keys, files, responses, messages, menus, launches, downloads, widgets, setNow: value => { now = value; }, setWriteFailure: value => { failWrites = value; }, setCorruptWrites: value => { corruptWrites = value; }, settings: api.readSettings('') };
 }
+
+test('layouts persist locally, merge with refresh settings, and only explicit overrides enter links', () => {
+  const h = harness();
+  assert.equal(h.settings.layout, 'original');
+  h.api.saveRefreshSeconds('30'); h.api.saveLayout('gradient');
+  assert.equal(h.api.readSettings('chatgpt://').layout, 'gradient');
+  assert.equal(h.api.readRefreshSeconds(), 30);
+  h.api.saveRefreshSeconds('45');
+  assert.equal(h.api.readLayout(), 'gradient');
+  const local = new URL(h.api.scriptURL(h.api.readSettings('chatgpt://'), 'medium', 'update'));
+  assert.equal(JSON.parse(local.searchParams.get('parameter')).layout, undefined);
+  const override = h.api.readSettings('{"layout":"dashboard","openURL":"chatgpt://"}');
+  assert.equal(override.layout, 'dashboard');
+  assert.equal(h.api.widgetTapURL(override, 'small'), 'chatgpt://');
+  assert.equal(JSON.parse(new URL(h.api.scriptURL(override, 'large', 'update')).searchParams.get('parameter')).layout, 'dashboard');
+  for (const layout of ['unknown', '__proto__', null, ['dark'], {}]) assert.throws(() => h.api.readSettings(JSON.stringify({ layout })));
+  h.keys.set('CodexUsage.preferences.v1', '{broken');
+  assert.equal(h.api.readLayout(), 'original');
+});
+
+test('layout menu saves selection, cancellation and failed storage leave settings intact', async () => {
+  const h = harness({ alertSteps: [{ choice: 9 }, { choice: 2 }], responses: [{}] });
+  let rendered;
+  h.api.setRenderer((snapshot, settings) => { rendered = settings; return { presentMedium: async () => {} }; });
+  await h.api.main();
+  assert.equal(rendered.layout, 'gradient');
+  assert.equal(h.api.readLayout(), 'gradient');
+  const cancelled = harness({ alertSteps: [{ choice: 9 }, { choice: -1 }] });
+  await cancelled.api.main();
+  assert.equal(cancelled.calls.length, 0);
+  assert.equal(cancelled.api.readLayout(), 'original');
+  const locked = harness({ keychainFails: true, alertSteps: [{ choice: 1 }] });
+  assert.equal(await locked.api.configureLayout(), null);
+  assert.match(locked.messages[0].message, /未能保存/);
+});
 
 test('companion HTTP API returns quota that the widget can display', async t => {
   const service = createUsageService({
@@ -478,6 +513,7 @@ test('update pins both files to one commit, verifies backup, and launches the ne
   const h = harness({ responses: updateResponses(), files, cloud: true });
   const connection = h.keys.get('CodexUsage.connection.v1');
   h.api.saveRefreshSeconds(30);
+  h.api.saveLayout('gradient');
   const preferences = h.keys.get('CodexUsage.preferences.v1');
   const target = 'myapp://view?title=hello%20world&next=a%2Bb#details';
   await h.api.updateScript({ ...h.settings, theme: 'dark', openURL: target }, 'large');
@@ -517,11 +553,13 @@ test('corrupt download, same version and failed replacement preserve the install
 test('restore validates and recovers the previous script without changing credentials', async () => {
   const h = harness({ files: new Map([['/documents/CodexUsage.js', fullSource]]), responses: updateResponses() });
   h.api.saveRefreshSeconds(17);
+  h.api.saveLayout('dashboard');
   await h.api.updateScript(h.settings, 'small');
   await h.api.restoreScript(h.settings, 'small');
   assert.equal(h.files.get('/documents/CodexUsage.js'), fullSource);
   assert.equal(h.api.readConnection().apiKey, KEY);
   assert.equal(h.api.readRefreshSeconds(), 17);
+  assert.equal(h.api.readLayout(), 'dashboard');
   assert.equal(h.launches.length, 2);
 });
 

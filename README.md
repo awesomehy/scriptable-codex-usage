@@ -1,6 +1,6 @@
 # Codex Usage · Scriptable 小组件与本地 API
 
-在 iPhone 桌面查看 Codex 账号额度。仓库同时包含 **Scriptable 小组件**和配套的 **Node.js 本地 API**：电脑读取当前登录账号的额度，手机通过自己的服务地址读取并展示。小组件版本 **1.0.3**，支持小号、中号、大号，以及浅色、深色和跟随系统。
+在 iPhone 桌面查看 Codex 账号额度。仓库同时包含 **Scriptable 小组件**和配套的 **Node.js 本地 API**：电脑读取当前登录账号的额度，手机通过自己的服务地址读取并展示。小组件版本 **1.0.4**，支持小号、中号、大号，以及四种可选布局。
 
 [查看脚本](https://github.com/awesomehy/scriptable-codex-usage/blob/main/CodexUsage.js) · [下载源码](https://raw.githubusercontent.com/awesomehy/scriptable-codex-usage/main/CodexUsage.js)
 
@@ -68,6 +68,29 @@ Invoke-RestMethod 'http://localhost:58321/api/usage' -Headers @{
 
 Parameter 留空时，点击桌面组件会打开脚本菜单，可预览三个尺寸、**立即刷新**、修改接口 / API Key 或设置刷新间隔。保存设置后会读取一次真实额度并显示中号预览。
 
+## 外观布局
+
+在 Scriptable 运行 **CodexUsage → 外观布局 → 选择风格**，保存后显示预览。设置保存在本机 Keychain，所有尺寸共用，更新或恢复代码都不会清除，也不会改变接口、密钥和刷新秒数。
+
+| 布局 | `layout` 参数 | 外观 |
+| --- | --- | --- |
+| 原版浅色 | `original` | 默认白底蓝条，兼容已有 `theme` 设置 |
+| 简洁深色 | `dark` | 固定深色背景，蓝色进度条 |
+| 渐变卡片 | `gradient` | 蓝色渐变背景，白色文字及进度条 |
+| 仪表盘 | `dashboard` | 圆环展示剩余额度，兼容 `theme` 设置 |
+
+![四种布局的中号预览](preview-layouts.png)
+
+各布局均保留真实数据时间、错误状态和更新入口。默认继续使用原版。桌面组件会在 iOS 下次运行脚本时采用本地选择；保存后的应用内预览立即生效。
+
+需要同一桌面使用不同布局时，在各组件 Parameter 的 JSON 中设置 `layout`，优先于本地选择。例如以下参数选择仪表盘并在点击时打开 ChatGPT：
+
+```json
+{"layout":"dashboard","openURL":"chatgpt://"}
+```
+
+原来直接填写的 `chatgpt://` 仍可使用，会采用本地选择的布局。已有 JSON 参数只需增加 `layout` 字段，移除此字段即可恢复跟随本地选择。完整预览见 [preview.html](preview.html)，浏览器排版与 iOS 存在差异，请以设备预览为准。
+
 ## 一键更新
 
 运行脚本 → **一键更新脚本**，或点击中号、大号组件右下角的 **更新 ↗**。
@@ -109,6 +132,7 @@ Parameter 留空时，点击桌面组件会打开脚本菜单，可预览三个�
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `theme` | `light` | `light` / `dark` / `auto` |
+| `layout` | 本机菜单选择，初始 `original` | `original` / `dark` / `gradient` / `dashboard`；显式填写时优先于本机选择 |
 | `window` | `auto` | `auto` / `weekly` / `session` / `primary` / `secondary`；仅影响小号、中号 |
 | `limitId` | `codex` | 精确选择 `limits` 中的额度组，不混用其他模型额度 |
 | `scenario` | `live` | `live` 为真实数据；`demo` / `stale` / `empty` / `error` 用于不联网的界面预览 |
