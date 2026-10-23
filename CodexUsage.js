@@ -1,20 +1,23 @@
 // Variables used by Scriptable.
 // icon-color: blue; icon-glyph: chart-bar;
 // CODEX_USAGE_WIDGET
-// version: 1.0.0
+// version: 1.0.1
 // Codex Usage
 // 独立脚本：全部复制到 Scriptable，命名为 CodexUsage。
 // 首次运行设置 API Key。密钥仅保存到 Scriptable Keychain，不要写入脚本或组件参数。
 
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 const REPOSITORY = "awesomehy/scriptable-codex-usage";
 const CONNECTION_KEY = "CodexUsage.connection.v1";
-const DEFAULTS = { theme: "light", scenario: "live", window: "auto", limitId: "codex", refreshMinutes: 10 };
+const DEFAULTS = { theme: "light", scenario: "live", window: "auto", limitId: "codex", refreshMinutes: 10, tapAction: "script" };
 const DEMO_NOW = Date.parse("2026-10-24T15:58:00Z");
 const FAMILIES = ["small", "medium", "large"];
 
 function readSettings(parameter) {
-  const input = parameter == null || parameter === "" ? {} : JSON.parse(parameter);
+  const value = typeof parameter === "string" ? parameter.trim() : parameter;
+  let input;
+  try { input = value == null || value === "" ? {} : typeof value === "string" && value.toLowerCase() === "chatgpt" ? { tapAction: "chatgpt" } : JSON.parse(value); }
+  catch (_) { throw new Error('Parameter 请填写 JSON 对象，或直接填写 ChatGPT。'); }
   if (!input || Array.isArray(input) || typeof input !== "object") throw new Error("Parameter 请填写 JSON 对象。");
   // 只允许显示参数进入组件 URL，防止误填的凭据被带入链接。
   const settings = { ...DEFAULTS };
@@ -22,6 +25,7 @@ function readSettings(parameter) {
   if (!["light", "dark", "auto"].includes(settings.theme)) throw new Error("theme 支持 light、dark、auto。");
   if (!["live", "demo", "empty", "stale", "error"].includes(settings.scenario)) throw new Error("scenario 支持 live、demo、empty、stale、error。");
   if (!["auto", "weekly", "session", "primary", "secondary"].includes(settings.window)) throw new Error("window 支持 auto、weekly、session、primary、secondary。");
+  if (!["script", "chatgpt"].includes(settings.tapAction)) throw new Error("tapAction 支持 script、chatgpt。");
   if (typeof settings.limitId !== "string" || !/^[a-zA-Z0-9_.-]{1,80}$/.test(settings.limitId)) throw new Error("limitId 请填写接口中的额度标识。");
   if (!Number.isInteger(settings.refreshMinutes) || settings.refreshMinutes < 1 || settings.refreshMinutes > 1440) {
     throw new Error("refreshMinutes 请填写 1–1440 之间的整数。");
@@ -314,6 +318,10 @@ function scriptURL(settings, family, action) {
   return url;
 }
 
+function widgetTapURL(settings, family) {
+  return settings.tapAction === "chatgpt" ? "chatgpt://" : scriptURL(settings, family);
+}
+
 async function showMessage(title, message) {
   const alert = new Alert();
   alert.title = title; alert.message = message;
@@ -492,14 +500,13 @@ function timestamp(value) {
 function resetLabel(value, now) {
   const at = timestamp(value);
   if (at === null) return "重置时间未知";
-  const minutes = Math.ceil((at - now) / 60000);
-  if (minutes <= 0) return "重置时间已到 · 待刷新";
-  if (minutes < 60) return "Resets in " + minutes + "分钟";
-  if (minutes < 1440) {
-    const hours = Math.floor(minutes / 60), rest = minutes % 60;
-    return "Resets in " + hours + "小时" + (rest ? " " + rest + "分" : "");
-  }
-  return "Resets in " + Math.ceil(minutes / 1440) + "天";
+  const remaining = at - now;
+  if (remaining <= 0) return "重置时间已到 · 待刷新";
+  // 先按实际毫秒判断单位，避免分钟舍入提前触发天数显示。
+  if (remaining >= 86400000) return "Resets in " + Math.round(remaining / 86400000) + "天";
+  const minutes = Math.round(remaining / 60000);
+  const hours = Math.floor(minutes / 60), rest = minutes % 60;
+  return "Resets in " + hours + "小时" + rest + "分钟";
 }
 
 function beijingTime(value, short) {
@@ -600,9 +607,9 @@ function quotaBlock(parent, entry, family, colors, now, compact) {
   parent.addSpacer(compact ? 5 : 7);
   progressBar(parent, entry.remainingPercent, colors);
   parent.addSpacer(compact ? 5 : 6);
-  // 小号只使用紧凑倒计时，避免长重置说明挤占一行。
+  // 各尺寸均保留小时和分钟，小号仅简化已到重置时间的提示。
   let reset = resetLabel(entry.resetsAt, now);
-  if (small) reset = reset.replace(/ (\d+)分$/, "").replace("重置时间已到 · 待刷新", "已到重置时间");
+  if (small) reset = reset.replace("重置时间已到 · 待刷新", "已到重置时间");
   text(parent, reset, compact ? 10 : small ? 10.5 : 11.5, colors.muted);
 }
 
@@ -615,7 +622,7 @@ function renderWidget(snapshot, settings, family, now = Date.now()) {
   widget.backgroundColor = colors.background;
   widget.setPadding(compact ? 12 : large ? 18 : 15, compact ? 12 : small ? 16 : 18, compact ? 8 : large ? 16 : 11, compact ? 12 : small ? 16 : 18);
   widget.refreshAfterDate = new Date(Math.max(now + settings.refreshMinutes * 60000, snapshot.retryAt || 0));
-  widget.url = scriptURL(settings, family);
+  widget.url = widgetTapURL(settings, family);
   header(widget, family, colors, compact);
   widget.addSpacer(compact ? 6 : large ? 22 : small ? 8 : 10);
 

@@ -1,6 +1,6 @@
 # Codex Usage · Scriptable 额度组件
 
-版本 **1.0.0**。按提供的 ChatGPT 原版截图制作，支持自建 Codex 额度 API；默认显示真实数据。支持小号、中号、大号，以及浅色、深色和跟随系统。
+版本 **1.0.1**。按提供的 ChatGPT 原版截图制作，支持自建 Codex 额度 API；默认显示真实数据。支持小号、中号、大号，以及浅色、深色和跟随系统。
 
 [查看脚本](https://github.com/awesomehy/scriptable-codex-usage/blob/main/CodexUsage.js) · [下载源码](https://raw.githubusercontent.com/awesomehy/scriptable-codex-usage/main/CodexUsage.js)
 
@@ -36,6 +36,7 @@
 - “立即刷新”跳过本地缓存，调用 `/api/usage?refresh=1`，让服务端重新读取额度；服务端限流时仍遵守 `Retry-After`。
 - 失败时保留上次成功数据和时间，标注“刷新失败”或“验证失败”；没有旧数据时显示 `—` 和错误说明。未知额度也显示 `—`，不会转换成 0%。
 - 重置时刻已到但还没有新数据时，提示等待刷新，不自行改成 100%。
+- 重置倒计时：剩余至少 24 小时时，天数四舍五入（6 天 4 小时显示 6 天，6 天 12 小时显示 7 天）；不足 24 小时显示“X 小时 Y 分钟”，分钟也按最近整数舍入，小号同样保留分钟。是否已到重置时间按实际时间判断，不由舍入值判断。
 
 根据 [Scriptable 刷新说明](https://docs.scriptable.app/listwidget/#refreshafterdate)，10 分钟是申请的最早运行间隔，实际由 iOS 调度。脚本内刷新并展示预览后，桌面组件仍由 iOS 安排重绘，不能保证立刻变化。
 
@@ -54,6 +55,19 @@
 | `limitId` | `codex` | 精确选择 `limits` 中的额度组，不混用其他模型额度 |
 | `refreshMinutes` | `10` | 1–1440 的整数；本地缓存和申请刷新间隔 |
 | `scenario` | `live` | `live` 为真实数据；`demo` / `stale` / `empty` / `error` 用于不联网的界面预览 |
+| `tapAction` | `script` | `script` 打开脚本菜单；`chatgpt` 通过 `chatgpt://` 打开已安装的 ChatGPT App |
+
+### 点击打开 ChatGPT
+
+先在 Scriptable 内运行脚本 → **一键更新脚本**，升级到 v1.0.1 或更新版本。然后长按桌面组件 → 编辑小组件，在 **Parameter** 直接填写 `ChatGPT`（不用引号）。也可使用 JSON 与其他参数组合：
+
+```json
+{"tapAction":"chatgpt","theme":"light"}
+```
+
+“When Interacting” 可以保留 Open App。脚本设置的点击链接会优先于该选项，见 [Scriptable 的 url 说明](https://docs.scriptable.app/listwidget/#url)。点击主体打开 ChatGPT；中号、大号右下角的更新链接仍打开脚本更新。小号需要从 Scriptable App 内运行脚本来修改配置或更新。
+
+需要 iPhone 已安装 ChatGPT。跳转使用 App URL Scheme，实际唤起行为需在 iPhone 上确认。默认 Parameter 留空时仍打开脚本菜单。
 
 `session` 选择实际存在的、短于一周的最短周期，不会虚构缺失的窗口。显式选择的周期不存在时显示“此额度窗口暂无数据”。演示场景会标注“示例”，日期固定为 2026-10-24，不能当作实时额度。不要在 Parameter 中填写 API Key 或接口地址；在脚本设置菜单中管理它们。
 

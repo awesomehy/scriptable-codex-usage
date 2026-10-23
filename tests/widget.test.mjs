@@ -6,6 +6,8 @@ import { createHash } from 'node:crypto';
 
 const fullSource = await readFile(new URL('../CodexUsage.js', import.meta.url), 'utf8');
 const source = fullSource.replace('try { await main(); } finally { Script.complete(); }', '');
+const currentVersion = fullSource.match(/^const VERSION = "([\d.]+)";/m)[1];
+const nextVersion = currentVersion.split('.').map((part, i) => i === 2 ? Number(part) + 1 : part).join('.');
 const NOW = Date.parse('2026-10-24T01:00:00Z');
 const KEY = 'test-key-not-a-real-credential';
 const PROFILE = { endpoint: 'http://example.test/api/usage', apiKey: KEY, cacheId: 'test-cache-0001' };
@@ -33,7 +35,7 @@ function harness({ configured = true, responses = [], files = new Map(), failWri
     isFileStoredIniCloud: () => cloud,
     downloadFileFromiCloud: async path => downloads.push(path),
   };
-  const api = vm.runInNewContext(`${source}\n;({readSettings, cleanPayload, snapshotFrom, chooseWindows, loadUsage, readConnection, saveConnection, normalizeEndpoint, footerLabel, effectiveStatus, fetchUsage, retryTime, configureConnection, main, sha256, validateUpdate, newerVersion, updateScript, restoreScript, replaceScript, scriptURL, setRenderer: fn => {renderWidget = fn;}})`, {
+  const api = vm.runInNewContext(`${source}\n;({readSettings, cleanPayload, snapshotFrom, chooseWindows, loadUsage, readConnection, saveConnection, normalizeEndpoint, footerLabel, effectiveStatus, fetchUsage, retryTime, configureConnection, main, sha256, validateUpdate, newerVersion, updateScript, restoreScript, replaceScript, scriptURL, widgetTapURL, resetLabel, beijingTime, setRenderer: fn => {renderWidget = fn;}})`, {
     Date: Clock,
     UUID: { string: () => 'test-new-cache-000' + ++uid },
     Keychain: {
@@ -73,6 +75,48 @@ test('defaults use live data; credentials and endpoint are excluded from widget 
   assert.equal(safe.apiKey, undefined);
   assert.equal(safe.endpoint, undefined);
   assert.throws(() => api.readSettings('{"refreshMinutes":0}'));
+});
+
+test('ChatGPT shorthand and JSON configure app taps without changing update links', () => {
+  const { api, settings } = harness();
+  assert.equal(settings.tapAction, 'script');
+  for (const parameter of ['ChatGPT', '  chatgpt  ', '{"tapAction":"chatgpt","theme":"dark"}']) {
+    const parsed = api.readSettings(parameter);
+    assert.equal(parsed.tapAction, 'chatgpt');
+    assert.equal(parsed.scenario, 'live');
+    assert.equal(api.widgetTapURL(parsed, 'small'), 'chatgpt://');
+    const update = new URL(api.scriptURL(parsed, 'medium', 'update'));
+    assert.equal(update.protocol, 'scriptable:');
+    assert.equal(update.searchParams.get('action'), 'update');
+    assert.equal(JSON.parse(update.searchParams.get('parameter')).tapAction, 'chatgpt');
+  }
+  assert.match(api.widgetTapURL(settings, 'small'), /^scriptable:/);
+  assert.throws(() => api.readSettings('SomeApp'), /JSON 对象/);
+  assert.throws(() => api.readSettings('{"tapAction":"other"}'), /tapAction/);
+});
+
+test('reset countdown rounds days and uses hours plus minutes below 24 hours', () => {
+  const { api } = harness();
+  const day = 86400000;
+  for (const [remaining, label] of [
+    [6 * day + 4 * 3600000, '6天'],
+    [6.5 * day - 1, '6天'], [6.5 * day, '7天'], [7 * day - 1, '7天'],
+    [day, '1天'], [day - 1, '24小时0分钟'],
+    [23 * 3600000 + 59 * 60000, '23小时59分钟'],
+    [2 * 3600000 + 18 * 60000, '2小时18分钟'], [3600000, '1小时0分钟'],
+    [5 * 60000, '0小时5分钟'], [30000, '0小时1分钟'], [1, '0小时0分钟'],
+  ]) assert.equal(api.resetLabel(new Date(NOW + remaining).toISOString(), NOW), 'Resets in ' + label);
+  assert.equal(api.resetLabel(new Date(NOW).toISOString(), NOW), '重置时间已到 · 待刷新');
+  assert.equal(api.resetLabel(null, NOW), '重置时间未知');
+});
+
+test('equivalent UTC and Beijing reset timestamps yield the same countdown and local clock', () => {
+  const { api } = harness();
+  const utc = '2026-10-29T17:19:24.000Z', beijing = '2026-10-30T01:19:24+08:00';
+  const reference = Date.parse('2026-10-24T00:36:07+08:00');
+  assert.equal(api.resetLabel(utc, reference), 'Resets in 6天');
+  assert.equal(api.resetLabel(beijing, reference), 'Resets in 6天');
+  assert.equal(api.beijingTime(utc, false), '10/30 01:19');
 });
 
 test('primary can be weekly; Unix reset seconds and optional metadata are mapped', () => {
@@ -232,8 +276,8 @@ test('unknown response fields are not persisted, and restriction survives cache 
   assert.equal(api.snapshotFrom(roundtrip, settings).restricted, true);
 });
 
-const nextSource = fullSource.replace('// version: 1.0.0\n', '// version: 1.0.1\n').replace('const VERSION = "1.0.0";', 'const VERSION = "1.0.1";');
-const nextManifest = () => ({ id: 'codex-usage-widget', script: 'CodexUsage.js', version: '1.0.1', sha256: createHash('sha256').update(nextSource).digest('hex') });
+const nextSource = fullSource.replace(`// version: ${currentVersion}\n`, `// version: ${nextVersion}\n`).replace(`const VERSION = "${currentVersion}";`, `const VERSION = "${nextVersion}";`);
+const nextManifest = () => ({ id: 'codex-usage-widget', script: 'CodexUsage.js', version: nextVersion, sha256: createHash('sha256').update(nextSource).digest('hex') });
 const updateResponses = (manifest = nextManifest(), script = nextSource) => [{ body: { sha: 'a'.repeat(40) } }, { body: manifest }, { raw: script }];
 
 test('SHA-256 matches Node for UTF-8 and release source; updates reject corruption and invalid syntax', () => {
@@ -274,7 +318,7 @@ test('update pins both files to one commit, verifies backup, and launches the ne
 test('corrupt download, same version and failed replacement preserve the installed script', async () => {
   for (const variant of ['corrupt', 'current', 'write-failure']) {
     const manifest = nextManifest();
-    if (variant === 'current') manifest.version = '1.0.0';
+    if (variant === 'current') manifest.version = currentVersion;
     const h = harness({ files: new Map([['/documents/CodexUsage.js', fullSource]]), responses: updateResponses(manifest, variant === 'corrupt' ? nextSource + 'corrupt' : nextSource), scriptWriteFails: variant === 'write-failure' });
     await h.api.updateScript(h.settings, 'medium');
     assert.equal(h.files.get('/documents/CodexUsage.js'), fullSource);
