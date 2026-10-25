@@ -1,12 +1,12 @@
 // Variables used by Scriptable.
 // icon-color: blue; icon-glyph: chart-bar;
 // CODEX_USAGE_WIDGET
-// version: 1.0.4
+// version: 1.0.5
 // Codex Usage
 // 独立脚本：全部复制到 Scriptable，命名为 CodexUsage。
 // 首次运行设置 API Key。密钥仅保存到 Scriptable Keychain，不要写入脚本或组件参数。
 
-const VERSION = "1.0.4";
+const VERSION = "1.0.5";
 const REPOSITORY = "awesomehy/scriptable-codex-usage";
 const CONNECTION_KEY = "CodexUsage.connection.v1";
 const PREFERENCES_KEY = "CodexUsage.preferences.v1";
@@ -545,6 +545,8 @@ function palette(theme) {
     muted: color("8E8E93", "9999A1"),
     track: color("EFEFF1", "36363B"),
     blue: color("0088FF", "0A84FF"),
+    // DrawContext 不支持动态颜色；位图前景使用固定蓝色，底轨仍跟随主题。
+    imageBlue: new Color(theme === "light" ? "0088FF" : "0A84FF"),
     warning: color("9A620F", "E7B362"),
   };
 }
@@ -552,7 +554,7 @@ function palette(theme) {
 function layoutColors(settings) {
   const colors = palette(settings.layout === "dark" ? "dark" : settings.theme);
   if (settings.layout === "gradient") {
-    for (const [key, hex] of Object.entries({ background: "164CA7", text: "FFFFFF", secondary: "D9E7FF", muted: "C5D8F9", track: "426AB2", blue: "FFFFFF", warning: "FFE3A1" })) colors[key] = new Color(hex);
+    for (const [key, hex] of Object.entries({ background: "164CA7", text: "FFFFFF", secondary: "D9E7FF", muted: "C5D8F9", track: "426AB2", blue: "FFFFFF", imageBlue: "FFFFFF", warning: "FFE3A1" })) colors[key] = new Color(hex);
   }
   return colors;
 }
@@ -706,23 +708,31 @@ function codexMark(color) {
 function progressBar(parent, value, colors) {
   const bar = parent.addStack();
   bar.layoutHorizontally();
+  bar.setPadding(0, 0, 0, 0);
   bar.spacing = 0;
   bar.size = new Size(0, 4);
   bar.cornerRadius = 2;
   bar.backgroundColor = colors.track;
   const valid = percentValue(value);
-  // 用色标位置表达比例，随组件实际宽度伸缩，无需按机型猜测宽度。
+  // 先绘制前景，避免极近色标的渐变在桌面快照中偶发只显示灰色底轨。
   if (valid === 100) bar.backgroundColor = colors.blue;
   else if (valid !== null && valid > 0) {
-    const gradient = new LinearGradient();
-    const ratio = valid / 100;
-    gradient.colors = [colors.blue, colors.blue, colors.track, colors.track];
-    gradient.locations = [0, ratio, Math.min(1, ratio + 0.00001), 1];
-    gradient.startPoint = new Point(0, 0.5);
-    gradient.endPoint = new Point(1, 0.5);
-    bar.backgroundGradient = gradient;
+    const ctx = new DrawContext(), side = 256;
+    ctx.size = new Size(side, side);
+    ctx.opaque = false;
+    ctx.respectScreenScale = false;
+    // 方形图像的每一行相同：横条无论拉伸还是按比例填满，都保留横向比例。
+    // 透明区域透出原生动态底轨；无需获取组件宽度或判断系统深浅色。
+    ctx.setFillColor(colors.imageBlue);
+    ctx.fillRect(new Rect(0, 0, side * valid / 100, side));
+    // 用独立子层承载透明图像，避免同一层的背景色与图像优先级影响灰轨。
+    const foreground = bar.addStack();
+    foreground.size = new Size(0, 4);
+    foreground.setPadding(0, 0, 0, 0);
+    foreground.backgroundImage = ctx.getImage();
+    foreground.addSpacer();
   }
-  bar.addSpacer();
+  if (valid === null || valid === 0 || valid === 100) bar.addSpacer();
   return bar;
 }
 

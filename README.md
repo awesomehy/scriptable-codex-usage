@@ -1,6 +1,6 @@
 # Codex Usage · Scriptable 小组件与本地 API
 
-在 iPhone 桌面查看 Codex 账号额度。仓库同时包含 **Scriptable 小组件**和配套的 **Node.js 本地 API**：电脑读取当前登录账号的额度，手机通过自己的服务地址读取并展示。小组件版本 **1.0.4**，支持小号、中号、大号，以及四种可选布局。
+在 iPhone 桌面查看 Codex 账号额度。仓库同时包含 **Scriptable 小组件**和配套的 **Node.js 本地 API**：电脑读取当前登录账号的额度，手机通过自己的服务地址读取并展示。小组件版本 **1.0.5**，支持小号、中号、大号，以及四种可选布局。
 
 [查看脚本](https://github.com/awesomehy/scriptable-codex-usage/blob/main/CodexUsage.js) · [下载源码](https://raw.githubusercontent.com/awesomehy/scriptable-codex-usage/main/CodexUsage.js)
 
@@ -183,6 +183,8 @@ node --check CodexUsage.js
 `preview.html` 是由实际渲染函数生成的交互式界面预览，使用明确标注的示例数据，不访问接口。浏览器的字体和布局与 iOS 会有差异，最终显示需要在 iPhone 的 Scriptable 中确认。
 
 ## 隐私与故障排查
+
+**有剩余额度但进度条偶尔全灰**：v1.0.5 将进度条前景从硬切换渐变改为运行时预先绘制的本地图像，灰色底轨继续跟随主题。数字和图像使用同一个剩余百分比，不增加网络请求。此变更绕开旧版渐变绘制路径；iOS 桌面快照的间歇性表现仍需在设备上确认。运行脚本 → 一键更新脚本，更新后会重新读取数据并预览；桌面画面在 iOS 下次重绘时替换。
 
 个人 API Key、服务地址、内网 IP 和本机安装路径应只写入私有配置。`.gitignore` 已排除 `config.json`、`.env*`、`.runtime/`、日志、密钥文件和依赖目录；配置模板中的回环地址和文档中的 `example.com` 地址是通用示例。
 
