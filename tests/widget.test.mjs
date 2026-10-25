@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createUsageService } from '../server/src/server.mjs';
+import { normalizeTokenUsage } from '../server/src/tokens.mjs';
 
 const fullSource = await readFile(new URL('../CodexUsage.js', import.meta.url), 'utf8');
 const source = fullSource.replace('try { await main(); } finally { Script.complete(); }', '');
@@ -16,6 +17,12 @@ const fixture = () => ({
   ok: true, fetchedAt: new Date(NOW).toISOString(), cached: false, ageSeconds: 0, cacheTtlSeconds: 30,
   ordinaryUsageAllowed: true, availableResetCount: 2,
   limits: [{ limitId: 'codex', planType: 'prolite', primary: { usedPercent: 88, remainingPercent: 12, windowDurationMins: 10080, resetsAt: 1793294364 }, secondary: null, spendControlReached: false, rateLimitReachedType: null }],
+});
+const tokenFixture = (at = NOW) => ({
+  ok: true, fetchedAt: new Date(at).toISOString(),
+  ...normalizeTokenUsage({ summary: { lifetimeTokens: 128400000 }, dailyUsageBuckets: [
+    { startDate: '2026-10-23', tokens: 984000 }, { startDate: '2026-10-24', tokens: 120000 },
+  ] }, new Date('2026-10-24T12:00:00')),
 });
 
 function harness({ configured = true, responses = [], files = new Map(), failWrites = false, corruptWrites = false, keychainFails = false, noStorage = false, scriptWriteFails = false, cloud = false, alertSteps = [], extra = {} } = {}) {
@@ -36,7 +43,7 @@ function harness({ configured = true, responses = [], files = new Map(), failWri
     isFileStoredIniCloud: () => cloud,
     downloadFileFromiCloud: async path => downloads.push(path),
   };
-  const api = vm.runInNewContext(`${source}\n;({readSettings, readLayout, saveLayout, configureLayout, readRefreshSeconds, saveRefreshSeconds, configureRefresh, cleanPayload, snapshotFrom, chooseWindows, loadUsage, readConnection, saveConnection, normalizeEndpoint, footerLabel, effectiveStatus, fetchUsage, retryTime, configureConnection, main, sha256, validateUpdate, newerVersion, updateScript, restoreScript, replaceScript, scriptURL, widgetTapURL, resetLabel, beijingTime, setRenderer: fn => {renderWidget = fn;}})`, {
+  const api = vm.runInNewContext(`${source}\n;({readSettings, readLayout, saveLayout, configureLayout, readSmallMetric, saveSmallMetric, configureSmallMetric, readRefreshSeconds, saveRefreshSeconds, configureRefresh, cleanPayload, cleanTokenPayload, snapshotFrom, tokenSnapshotFrom, tokenEndpoint, tokenMetric, formatTokenAmount, tokenNote, chooseWindows, loadUsage, loadTokenUsage, loadDashboard, readConnection, saveConnection, normalizeEndpoint, footerLabel, effectiveStatus, fetchUsage, retryTime, configureConnection, main, sha256, validateUpdate, newerVersion, updateScript, restoreScript, replaceScript, scriptURL, widgetTapURL, resetLabel, beijingTime, setRenderer: fn => {renderWidget = fn;}})`, {
     Date: Clock,
     UUID: { string: () => 'test-new-cache-000' + ++uid },
     Keychain: {
@@ -121,7 +128,7 @@ test('companion HTTP API returns quota that the widget can display', async t => 
       primary: { usedPercent: 35, windowDurationMins: 10080, resetsAt: 1893456000 },
       secondary: null,
     } },
-  }));
+  }), async () => ({ summary: { lifetimeTokens: 128400000 }, dailyUsageBuckets: [{ startDate: '2026-10-23', tokens: 984000 }] }));
   await new Promise(resolve => service.server.listen(0, '127.0.0.1', resolve));
   t.after(() => service.close());
   const url = `http://127.0.0.1:${service.server.address().port}/api/usage`;
@@ -137,6 +144,12 @@ test('companion HTTP API returns quota that the widget can display', async t => 
   assert.equal(snapshot.windows[0].label, 'Weekly');
   assert.equal(snapshot.availableResetCount, 2);
   assert.ok(!JSON.stringify(payload).includes(KEY));
+  const tokenResponse = await fetch(url.replace(/usage$/, 'token-usage'), { headers: { Authorization: `Bearer ${KEY}` } });
+  assert.equal(tokenResponse.status, 200);
+  h.setNow(Date.now());
+  const tokens = h.api.cleanTokenPayload(await tokenResponse.json());
+  assert.equal(tokens.lifetimeTokens, 128400000);
+  assert.equal(typeof tokens.thisMonth.complete, 'boolean');
 });
 
 test('defaults use live data; credentials and endpoint are excluded from widget parameters', () => {
@@ -204,8 +217,8 @@ test('refresh settings form retries invalid input, and cancel preserves the save
   assert.equal(h.calls.length, 0);
 });
 
-test('refresh menu saves seconds then forces exactly one request with the new interval', async () => {
-  const h = harness({ responses: [{}, {}], alertSteps: [{ choice: 5 }, { choice: 0, values: ['30'] }] });
+test('refresh menu saves seconds then forces one read of each resource with the new interval', async () => {
+  const h = harness({ responses: [{}, {}, { body: tokenFixture() }], alertSteps: [{ choice: 5 }, { choice: 0, values: ['30'] }] });
   await h.api.loadUsage(h.settings);
   let rendered, presented = 0;
   h.api.setRenderer((snapshot, settings) => {
@@ -213,8 +226,9 @@ test('refresh menu saves seconds then forces exactly one request with the new in
     return { presentMedium: async () => { presented++; } };
   });
   await h.api.main();
-  assert.equal(h.calls.length, 2, 'save must bypass the previously fresh 600-second cache once');
+  assert.equal(h.calls.length, 3, 'save bypasses the fresh quota cache and reads tokens once');
   assert.equal(h.calls[1].url, PROFILE.endpoint + '?refresh=1');
+  assert.equal(h.calls[2].url, 'http://example.test/api/token-usage?refresh=1');
   assert.match(h.menus[0].actions[5], /600 秒/);
   assert.equal(rendered.settings.refreshSeconds, 30);
   assert.equal(presented, 1);
@@ -563,19 +577,180 @@ test('restore validates and recovers the previous script without changing creden
   assert.equal(h.launches.length, 2);
 });
 
-test('refresh launch bypasses menus and performs exactly one forced quota read', async () => {
-  const h = harness({ responses: [{}], extra: { args: { queryParameters: { action: 'refresh', family: 'large', parameter: '{"theme":"dark","scenario":"demo","openURL":"myapp://"}' } } } });
+test('refresh launch bypasses menus and reads quota and tokens exactly once each', async () => {
+  const h = harness({ responses: [{}, { body: tokenFixture() }], extra: { args: { queryParameters: { action: 'refresh', family: 'large', parameter: '{"theme":"dark","scenario":"demo","openURL":"myapp://"}' } } } });
   let rendered, presented = 0;
   h.api.setRenderer((snapshot, settings, family) => {
     rendered = { snapshot, settings, family };
     return { presentLarge: async () => { presented++; } };
   });
   await h.api.main();
-  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls.length, 2);
   assert.equal(h.calls[0].url, PROFILE.endpoint + '?refresh=1');
+  assert.equal(h.calls[1].url, 'http://example.test/api/token-usage?refresh=1');
+  assert.equal(rendered.snapshot.tokens.payload.lifetimeTokens, 128400000);
   assert.equal(rendered.settings.scenario, 'live');
   assert.equal(rendered.settings.theme, 'dark');
   assert.equal(rendered.settings.openURL, 'myapp://');
   assert.equal(rendered.family, 'large');
   assert.equal(presented, 1);
+});
+
+test('token contract preserves unknowns, partial coverage and zero, stripping unrelated fields', () => {
+  const h = harness(), input = tokenFixture();
+  input.secret = KEY; input.thisMonth.secret = KEY;
+  const clean = h.api.cleanTokenPayload(input);
+  assert.equal(clean.lifetimeTokens, 128400000);
+  assert.equal(clean.thisMonth.tokens, 1104000);
+  assert.equal(clean.thisMonth.complete, false);
+  assert.equal(clean.yesterday.complete, true);
+  assert.equal(h.api.tokenMetric(h.api.tokenSnapshotFrom(clean), 'thisMonth').partial, true);
+  assert.ok(!JSON.stringify(clean).includes(KEY));
+  assert.equal(JSON.stringify(h.api.cleanTokenPayload(clean)), JSON.stringify(clean));
+  const noHistory = { ...tokenFixture(), ...normalizeTokenUsage({ summary: { lifetimeTokens: null } }, new Date('2026-10-24T12:00:00')) };
+  assert.equal(h.api.cleanTokenPayload(noHistory).thisMonth.tokens, null);
+  const zero = { ...tokenFixture(), ...normalizeTokenUsage({ dailyUsageBuckets: [{ startDate: '2026-10-23', tokens: 0 }] }, new Date('2026-10-24T12:00:00')) };
+  assert.equal(h.api.cleanTokenPayload(zero).yesterday.tokens, 0);
+  assert.equal(h.api.tokenMetric(h.api.tokenSnapshotFrom(zero), 'yesterday').partial, false);
+  for (const mutate of [
+    b => { b.lifetimeTokens = -1; }, b => { b.lifetimeTokens = '128'; },
+    b => { b.last7Days.tokens = Number.MAX_SAFE_INTEGER + 1; },
+    b => { b.thisMonth.tokens = null; }, b => { b.thisMonth.complete = true; },
+    b => { b.yesterday.reportedDays = 0; }, b => { b.asOfDate = '2026-02-30'; },
+    b => { b.thisMonth.missingDates[0] = 'invalid'; },
+    b => { b.thisMonth.missingDates[1] = b.thisMonth.missingDates[0]; },
+    b => { b.fetchedAt = new Date(NOW + 120000).toISOString(); },
+  ]) {
+    const bad = tokenFixture(); mutate(bad);
+    assert.throws(() => h.api.cleanTokenPayload(bad), /格式/);
+  }
+});
+
+test('Chinese token units round without trailing zeros or treating unknown as zero', () => {
+  const { api } = harness();
+  for (const [value, number, unit] of [
+    [null, '—', ''], [-1, '—', ''], [NaN, '—', ''], ['10', '—', ''],
+    [0, '0', ''], [9999, '9999', ''], [10000, '1', '万'], [984000, '98.4', '万'],
+    [5240000, '524', '万'], [18600000, '1860', '万'],
+    [99999999, '1', '亿'], [100000000, '1', '亿'], [128400000, '1.28', '亿'],
+  ]) {
+    const result = api.formatTokenAmount(value);
+    assert.equal(result.number, number); assert.equal(result.unit, unit);
+  }
+});
+
+test('dashboard authenticates both paths, independently caches them and forces one refresh each', async () => {
+  const h = harness({ responses: [{}, { body: tokenFixture() }, {}, { body: tokenFixture() }] });
+  const first = await h.api.loadDashboard(h.settings);
+  assert.equal(first.windows[0].remainingPercent, 12);
+  assert.equal(first.tokens.payload.lifetimeTokens, 128400000);
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls[1].url, 'http://example.test/api/token-usage');
+  for (const call of h.calls) assert.equal(call.headers.Authorization, 'Bearer ' + KEY);
+  h.setNow(NOW + 599999);
+  await h.api.loadDashboard(h.settings);
+  assert.equal(h.calls.length, 2);
+  await h.api.loadDashboard(h.settings, { force: true });
+  assert.equal(h.calls.length, 4);
+  assert.ok(h.calls.slice(2).every(call => call.url.endsWith('?refresh=1')));
+  assert.ok([...h.files.keys()].some(path => /\/tokens-/.test(path)));
+  assert.ok([...h.files.values()].every(value => !value.includes(KEY) && !value.includes(PROFILE.endpoint)));
+  assert.equal(h.api.tokenEndpoint('https://example.test/proxy/api/usage'), 'https://example.test/proxy/api/token-usage');
+});
+
+test('upgrade reuses the old quota cache while loading the new token endpoint', async () => {
+  const h = harness({ responses: [{}, { body: tokenFixture() }] });
+  await h.api.loadUsage(h.settings);
+  const dashboard = await h.api.loadDashboard(h.settings);
+  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls[1].url, 'http://example.test/api/token-usage');
+  assert.equal(dashboard.tokens.status, 'ready');
+});
+
+test('token failure keeps its older timestamp and cached values while fresh quota remains usable', async () => {
+  const h = harness({ responses: [{}, { body: tokenFixture() }, { body: { ...fixture(), fetchedAt: new Date(NOW + 600000).toISOString() } }, { status: 503 }] });
+  await h.api.loadDashboard(h.settings);
+  h.setNow(NOW + 600000);
+  const next = await h.api.loadDashboard(h.settings);
+  assert.equal(next.status, 'ready');
+  assert.equal(next.updatedAt, new Date(NOW + 600000).toISOString());
+  assert.equal(next.tokens.status, 'stale');
+  assert.equal(next.tokens.payload.lifetimeTokens, 128400000);
+  const footer = h.api.footerLabel(next, 'ready', false);
+  assert.match(footer, /09:00 · 用量未更新/);
+  assert.equal((footer.match(/\d{2}:\d{2}/g) || []).length, 1);
+  await h.api.loadDashboard(h.settings);
+  assert.equal(h.calls.length, 4);
+});
+
+test('one unavailable endpoint never discards the other endpoint or fabricates token values', async () => {
+  const noTokens = harness({ responses: [{}, { status: 404 }] });
+  const a = await noTokens.api.loadDashboard(noTokens.settings);
+  assert.equal(a.status, 'ready'); assert.equal(a.tokens.status, 'error');
+  assert.equal(noTokens.api.tokenMetric(a.tokens, 'thisMonth').value, null);
+  assert.match(noTokens.api.footerLabel(a, 'ready', true), /用量未更新/);
+  const noQuota = harness({ responses: [{ status: 503 }, { body: tokenFixture() }] });
+  const b = await noQuota.api.loadDashboard(noQuota.settings);
+  assert.equal(b.status, 'error'); assert.equal(b.tokens.status, 'ready');
+  assert.equal(b.tokens.payload.lifetimeTokens, 128400000);
+  assert.match(noQuota.api.footerLabel(b, 'error', true), /09:00/);
+  assert.match(noQuota.api.footerLabel(b, 'error', true), /服务异常/);
+  const neither = harness({ responses: [{ status: 401 }, { status: 401 }] });
+  const c = await neither.api.loadDashboard(neither.settings);
+  assert.match(neither.api.footerLabel(c, 'error', true), /验证失败 · 未成功刷新/);
+  assert.match(neither.api.footerLabel(c, 'error', false), /验证失败 · 尚无成功刷新/);
+  assert.match(noTokens.api.footerLabel({ ...a, missingWindow: true }, 'ready', true), /窗口无数据/);
+});
+
+test('token redirect and rate limit keep credentials private and respect Retry-After independently', async () => {
+  const redirected = harness({ responses: [{ redirect: true, status: 302 }] });
+  assert.equal((await redirected.api.loadTokenUsage(redirected.settings)).errorCode, 'REDIRECT');
+  const limited = harness({ responses: [{ status: 429, headers: { 'Retry-After': '120' } }, {}] });
+  assert.equal((await limited.api.loadTokenUsage(limited.settings)).retryAt, NOW + 120000);
+  limited.setNow(NOW + 60000);
+  await limited.api.loadTokenUsage(limited.settings, { force: true });
+  assert.equal(limited.calls.length, 1);
+  assert.equal((await limited.api.loadUsage(limited.settings)).status, 'ready');
+  assert.equal(limited.calls.length, 2);
+  assert.ok([...limited.files.values()].every(value => !value.includes(KEY)));
+});
+
+test('token cache is partitioned by credentials and corrupt writes retain an older valid slot', async () => {
+  const h = harness({ responses: [{ body: tokenFixture() }, { body: tokenFixture(NOW + 600000) }, { status: 503 }, { status: 401 }] });
+  await h.api.loadTokenUsage(h.settings);
+  h.setNow(NOW + 600000); h.setCorruptWrites(true);
+  assert.equal((await h.api.loadTokenUsage(h.settings)).cacheWarning, true);
+  h.setCorruptWrites(false);
+  const stale = await h.api.loadTokenUsage(h.settings);
+  assert.equal(stale.updatedAt, tokenFixture().fetchedAt);
+  h.api.saveConnection(PROFILE.endpoint, 'different-test-key', h.api.readConnection());
+  const changed = await h.api.loadTokenUsage(h.settings);
+  assert.equal(changed.payload, null); assert.equal(changed.status, 'error');
+});
+
+test('small metric is local, merges other preferences, survives updates and is absent from links', async () => {
+  const h = harness({ responses: updateResponses(), files: new Map([['/documents/CodexUsage.js', fullSource]]) });
+  assert.equal(h.api.readSmallMetric(), 'thisMonth');
+  h.api.saveLayout('dark'); h.api.saveRefreshSeconds(30); h.api.saveSmallMetric('yesterday');
+  assert.equal(h.api.readSettings('{"smallMetric":"lifetime"}').smallMetric, 'yesterday');
+  assert.equal(h.api.readLayout(), 'dark'); assert.equal(h.api.readRefreshSeconds(), 30);
+  const settings = h.api.readSettings('chatgpt://');
+  const parameter = JSON.parse(new URL(h.api.scriptURL(settings, 'small', 'update')).searchParams.get('parameter'));
+  assert.equal(parameter.smallMetric, undefined);
+  for (const value of ['bad', '__proto__', null, 2]) assert.throws(() => h.api.saveSmallMetric(value));
+  await h.api.updateScript(settings, 'small');
+  assert.equal(h.api.readSmallMetric(), 'yesterday');
+  assert.equal(h.api.readLayout(), 'dark'); assert.equal(h.api.readRefreshSeconds(), 30);
+});
+
+test('small metric menu previews the saved choice and cancellation makes no API requests', async () => {
+  const h = harness({ alertSteps: [{ choice: 10 }, { choice: 3 }], responses: [{}, { body: tokenFixture() }] });
+  let rendered;
+  h.api.setRenderer((snapshot, settings, family) => { rendered = { settings, family }; return { presentSmall: async () => {} }; });
+  await h.api.main();
+  assert.equal(h.api.readSmallMetric(), 'yesterday');
+  assert.equal(rendered.settings.smallMetric, 'yesterday'); assert.equal(rendered.family, 'small');
+  const cancel = harness({ alertSteps: [{ choice: 10 }, { choice: -1 }] });
+  await cancel.api.main();
+  assert.equal(cancel.calls.length, 0); assert.equal(cancel.api.readSmallMetric(), 'thisMonth');
 });

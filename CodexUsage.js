@@ -1,12 +1,12 @@
 // Variables used by Scriptable.
 // icon-color: blue; icon-glyph: chart-bar;
 // CODEX_USAGE_WIDGET
-// version: 1.0.5
+// version: 1.0.6
 // Codex Usage
 // 独立脚本：全部复制到 Scriptable，命名为 CodexUsage。
 // 首次运行设置 API Key。密钥仅保存到 Scriptable Keychain，不要写入脚本或组件参数。
 
-const VERSION = "1.0.5";
+const VERSION = "1.0.6";
 const REPOSITORY = "awesomehy/scriptable-codex-usage";
 const CONNECTION_KEY = "CodexUsage.connection.v1";
 const PREFERENCES_KEY = "CodexUsage.preferences.v1";
@@ -16,6 +16,7 @@ const FETCH_ERROR_CODES = ["AUTH", "NETWORK", "CONNECT", "TIMEOUT", "DNS", "FORM
 const DEMO_NOW = Date.parse("2026-10-24T15:58:00Z");
 const FAMILIES = ["small", "medium", "large"];
 const LAYOUTS = { original: "原版浅色", dark: "简洁深色", gradient: "渐变卡片", dashboard: "仪表盘" };
+const TOKEN_METRICS = { lifetime: "累计", thisMonth: "本月", last7Days: "近7日", yesterday: "昨日" };
 
 function readSettings(parameter) {
   const value = typeof parameter === "string" ? parameter.trim() : parameter;
@@ -40,7 +41,7 @@ function readSettings(parameter) {
   }
   if (typeof settings.limitId !== "string" || !/^[a-zA-Z0-9_.-]{1,80}$/.test(settings.limitId)) throw new Error("limitId 请填写接口中的额度标识。");
   if (input.layout !== undefined && (typeof input.layout !== "string" || !Object.prototype.hasOwnProperty.call(LAYOUTS, input.layout))) throw new Error("layout 支持 original、dark、gradient、dashboard。");
-  return { ...settings, refreshSeconds: readRefreshSeconds(), layout: input.layout ?? readLayout(), layoutOverride: input.layout ?? null };
+  return { ...settings, refreshSeconds: readRefreshSeconds(), layout: input.layout ?? readLayout(), layoutOverride: input.layout ?? null, smallMetric: readSmallMetric() };
 }
 
 function readPreferences() {
@@ -77,6 +78,29 @@ async function configureLayout() {
   const index = await menu.presentSheet();
   if (index < 0 || !layouts[index]) return null;
   try { saveLayout(layouts[index]); return layouts[index]; }
+  catch (error) { await showMessage("设置未保存", error.message); return null; }
+}
+
+function readSmallMetric() {
+  const metric = readPreferences().smallMetric;
+  return typeof metric === "string" && Object.prototype.hasOwnProperty.call(TOKEN_METRICS, metric) ? metric : "thisMonth";
+}
+
+function saveSmallMetric(metric) {
+  if (typeof metric !== "string" || !Object.prototype.hasOwnProperty.call(TOKEN_METRICS, metric)) throw new Error("无效的用量显示项。");
+  try { savePreference("smallMetric", metric); }
+  catch (_) { throw new Error("小号显示项未能保存到本机，请重试。"); }
+}
+
+async function configureSmallMetric() {
+  const menu = new Alert(), metrics = Object.keys(TOKEN_METRICS), current = readSmallMetric();
+  menu.title = "小号 Token 显示项";
+  menu.message = "选择小号组件中额度下方的用量数据。保存在本机，中号和大号继续显示全部四项。";
+  metrics.forEach(id => menu.addAction((id === current ? "✓ " : "") + TOKEN_METRICS[id]));
+  menu.addCancelAction("取消");
+  const index = await menu.presentSheet();
+  if (index < 0 || !metrics[index]) return null;
+  try { saveSmallMetric(metrics[index]); return metrics[index]; }
   catch (error) { await showMessage("设置未保存", error.message); return null; }
 }
 
@@ -167,10 +191,6 @@ function usageError(code) {
   const error = new Error(messages[code] || messages.SERVER);
   error.code = code;
   return error;
-}
-
-function compactError(code) {
-  return { AUTH: "API Key 无效", NETWORK: "网络连接失败", CONNECT: "无法连接 API 服务", TIMEOUT: "接口请求超时", DNS: "接口域名解析失败", FORMAT: "接口格式错误", SERVER: "服务端读取失败", REDIRECT: "请修改接口地址", RATE: "请求过多，稍后重试", KEYCHAIN: "请重新设置接口" }[code] || "暂时无法读取额度";
 }
 
 function networkErrorCode(error) {
@@ -281,6 +301,52 @@ function snapshotFrom(payload, settings) {
   };
 }
 
+function validDateKey(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+}
+
+function cleanTokenPayload(body, now = Date.now()) {
+  const object = value => value && typeof value === "object" && !Array.isArray(value);
+  const validTokens = value => value === null || Number.isSafeInteger(value) && value >= 0;
+  const fetched = timestamp(body?.fetchedAt);
+  if (!object(body) || body.ok !== true || fetched === null || fetched > now + 60000 || !validTokens(body.lifetimeTokens) || !validDateKey(body.asOfDate)) throw usageError("FORMAT");
+  const result = { ok: true, fetchedAt: new Date(fetched).toISOString(), lifetimeTokens: body.lifetimeTokens, asOfDate: body.asOfDate };
+  for (const key of ["thisMonth", "last7Days", "yesterday"]) {
+    const row = body[key];
+    if (!object(row) || !validTokens(row.tokens) || !validDateKey(row.startDate) || !validDateKey(row.endDate) || row.startDate > row.endDate || row.endDate > body.asOfDate) throw usageError("FORMAT");
+    const days = Math.round((Date.parse(row.endDate) - Date.parse(row.startDate)) / 86400000) + 1;
+    if (days > 31 || !Number.isInteger(row.reportedDays) || row.reportedDays < 0 || row.reportedDays > days || !Array.isArray(row.missingDates) || row.missingDates.length > days || row.reportedDays + row.missingDates.length !== days || typeof row.complete !== "boolean" || row.complete !== (row.missingDates.length === 0) || (row.tokens === null) !== (row.reportedDays === 0)) throw usageError("FORMAT");
+    const missing = new Set();
+    for (const date of row.missingDates) {
+      if (!validDateKey(date) || date < row.startDate || date > row.endDate || missing.has(date)) throw usageError("FORMAT");
+      missing.add(date);
+    }
+    result[key] = { tokens: row.tokens, startDate: row.startDate, endDate: row.endDate, reportedDays: row.reportedDays, missingDates: [...missing], complete: row.complete };
+  }
+  return result;
+}
+
+function tokenSnapshotFrom(payload) {
+  return { status: "ready", updatedAt: payload.fetchedAt, payload };
+}
+
+function demoTokens(settings) {
+  if (["empty", "error"].includes(settings.scenario)) return { status: settings.scenario, updatedAt: null, payload: null };
+  const fetchedAt = new Date(DEMO_NOW - (settings.scenario === "stale" ? 2 * 3600000 : 0)).toISOString();
+  const period = (tokens, startDate, endDate, reportedDays) => ({ tokens, startDate, endDate, reportedDays, missingDates: [], complete: true });
+  return { ...tokenSnapshotFrom({
+    ok: true, fetchedAt, lifetimeTokens: 128400000, asOfDate: "2026-10-24",
+    thisMonth: period(18600000, "2026-10-01", "2026-10-24", 24),
+    last7Days: period(5240000, "2026-10-18", "2026-10-24", 7),
+    yesterday: period(984000, "2026-10-23", "2026-10-23", 1),
+  }), status: settings.scenario === "stale" ? "stale" : "ready" };
+}
+
+function tokenEndpoint(endpoint) {
+  if (!/\/usage$/.test(endpoint)) throw usageError("FORMAT");
+  return endpoint.replace(/\/usage$/, "/token-usage");
+}
+
 function chooseWindows(windows, preference, large) {
   const weekly = windows.find(row => row.windowDurationMins === 10080);
   const session = windows.filter(row => row.windowDurationMins > 0 && row.windowDurationMins < 10080).sort((a, b) => a.windowDurationMins - b.windowDurationMins)[0];
@@ -290,11 +356,11 @@ function chooseWindows(windows, preference, large) {
 }
 
 // 两个交替写入的本地文件：写入中断时，仍能读取另一份有效快照；不调用 move()。
-function cacheStore(connection) {
+function cacheStore(connection, kind = "usage") {
   const fm = FileManager.local();
   const folder = fm.joinPath(fm.documentsDirectory(), "CodexUsageWidget");
   if (!fm.fileExists(folder)) fm.createDirectory(folder, true);
-  return { fm, paths: [0, 1].map(index => fm.joinPath(folder, "usage-" + connection.cacheId + "-" + index + ".json")) };
+  return { fm, kind, paths: [0, 1].map(index => fm.joinPath(folder, kind + "-" + connection.cacheId + "-" + index + ".json")) };
 }
 
 function readCache(store, now) {
@@ -305,7 +371,7 @@ function readCache(store, now) {
       if (!store.fm.fileExists(store.paths[slot])) continue;
       const entry = JSON.parse(store.fm.readString(store.paths[slot]));
       if (entry.version !== 1 || !Number.isSafeInteger(entry.revision) || entry.revision < 1 || nullableNumber(entry.receivedAt) === null || entry.receivedAt < 0 || entry.receivedAt > now + 60000) continue;
-      entry.payload = entry.payload ? cleanPayload(entry.payload, now) : null;
+      entry.payload = entry.payload ? (store.kind === "tokens" ? cleanTokenPayload : cleanPayload)(entry.payload, now) : null;
       entry.errorCode = FETCH_ERROR_CODES.includes(entry.errorCode) ? entry.errorCode : null;
       entry.retryAt = nullableNumber(entry.retryAt) || 0;
       entries.push({ ...entry, slot });
@@ -331,7 +397,7 @@ function retryTime(headers, now) {
   return Number.isFinite(at) && at > now ? at : now + 60000;
 }
 
-async function fetchUsage(connection, force) {
+async function fetchUsage(connection, force, clean = cleanPayload) {
   const request = new Request(connection.endpoint + (force ? "?refresh=1" : ""));
   request.method = "GET";
   request.headers = { Authorization: "Bearer " + connection.apiKey, Accept: "application/json" };
@@ -354,35 +420,46 @@ async function fetchUsage(connection, force) {
   let body;
   try { body = JSON.parse(raw); } catch (_) { throw usageError("FORMAT"); }
   if (body?.ok === false) throw usageError(body.error?.code === "UNAUTHORIZED" ? "AUTH" : "SERVER");
-  return cleanPayload(body);
+  return clean(body);
 }
 
-async function loadUsage(settings, options = {}) {
-  if (settings.scenario !== "live") return demoUsage(settings);
+async function loadResource(settings, options, tokens) {
+  if (settings.scenario !== "live") return tokens ? demoTokens(settings) : demoUsage(settings);
+  const empty = tokens ? { updatedAt: null, payload: null } : { updatedAt: null, windows: [] };
+  const snapshot = payload => tokens ? tokenSnapshotFrom(payload) : snapshotFrom(payload, settings);
   let connection;
-  try { connection = readConnection(); }
-  catch (error) { return { status: "error", updatedAt: null, windows: [], errorCode: error.code }; }
-  if (!connection) return { status: "empty", updatedAt: null, windows: [] };
+  try {
+    connection = readConnection();
+    if (tokens && connection) connection = { ...connection, endpoint: tokenEndpoint(connection.endpoint) };
+  } catch (error) { return { ...empty, status: "error", errorCode: error.code }; }
+  if (!connection) return { ...empty, status: "empty" };
   const now = Date.now();
   let store;
-  try { store = cacheStore(connection); } catch (_) { store = null; }
+  try { store = cacheStore(connection, tokens ? "tokens" : "usage"); } catch (_) { store = null; }
   const cache = readCache(store, now);
-  const oldSnapshot = cache?.payload ? snapshotFrom(cache.payload, settings) : null;
-  const withError = (code, retryAt) => ({ ...(oldSnapshot || { updatedAt: null, windows: [] }), status: oldSnapshot ? "stale" : "error", errorCode: code, retryAt });
+  const oldSnapshot = cache?.payload ? snapshot(cache.payload) : null;
+  const withError = (code, retryAt) => ({ ...(oldSnapshot || empty), status: oldSnapshot ? "stale" : "error", errorCode: code, retryAt });
   if (cache?.errorCode && cache.retryAt > now && (!options.force || cache.errorCode === "RATE")) return withError(cache.errorCode, cache.retryAt);
   const interval = settings.refreshSeconds * 1000;
   if (!options.force && cache?.payload && !cache.errorCode && now >= cache.receivedAt && now - cache.receivedAt < interval && now - timestamp(cache.payload.fetchedAt) < interval) return oldSnapshot;
   try {
-    const payload = await fetchUsage(connection, options.force === true);
+    const payload = await fetchUsage(connection, options.force === true, tokens ? cleanTokenPayload : cleanPayload);
     const receivedAt = Date.now();
     const saved = writeCache(store, cache, { payload, receivedAt, errorCode: null, retryAt: 0 });
-    return { ...snapshotFrom(payload, settings), cacheWarning: !saved };
+    return { ...snapshot(payload), cacheWarning: !saved };
   } catch (error) {
     const code = FETCH_ERROR_CODES.includes(error.code) ? error.code : "NETWORK";
     const retryAt = error.retryAt || Date.now() + 60000;
     const saved = writeCache(store, cache, { payload: cache?.payload || null, receivedAt: cache?.receivedAt || now, errorCode: code, retryAt });
     return { ...withError(code, retryAt), cacheWarning: !saved };
   }
+}
+
+async function loadUsage(settings, options = {}) { return loadResource(settings, options, false); }
+async function loadTokenUsage(settings, options = {}) { return loadResource(settings, options, true); }
+async function loadDashboard(settings, options = {}) {
+  const [quota, tokens] = await Promise.all([loadUsage(settings, options), loadTokenUsage(settings, options)]);
+  return { ...quota, tokens };
 }
 
 function scriptURL(settings, family, action) {
@@ -577,37 +654,12 @@ function quotaRing(value, colors, diameter) {
   arc(1, colors.track);
   const valid = percentValue(value);
   if (valid !== null && valid > 0) arc(valid / 100, colors.blue);
-  ctx.setFont(Font.systemFont(diameter < 70 ? 16 : 22));
+  const fontSize = diameter < 44 ? 11 : diameter < 52 ? 13 : diameter < 70 ? 16 : 22;
+  ctx.setFont(Font.systemFont(fontSize));
   ctx.setTextColor(colors.text);
   ctx.setTextAlignedCenter();
-  ctx.drawTextInRect(percentLabel(value).replace(" left", ""), new Rect(5, diameter / 2 - (diameter < 70 ? 10 : 14), diameter - 10, 30));
+  ctx.drawTextInRect(percentLabel(value).replace(" left", ""), new Rect(5, diameter / 2 - fontSize * 0.65, diameter - 10, fontSize * 1.5));
   return ctx.getImage();
-}
-
-function dashboardBlock(parent, entry, family, colors, now, compact) {
-  const small = family === "small";
-  const diameter = small ? 52 : compact ? 68 : 78;
-  if (small) {
-    text(parent, entry.label || "Usage", 11, colors.secondary);
-    parent.addSpacer(3);
-  }
-  const row = parent.addStack();
-  row.centerAlignContent();
-  const ring = row.addImage(quotaRing(entry.remainingPercent, colors, diameter));
-  ring.imageSize = new Size(diameter, diameter);
-  row.addSpacer(small ? 8 : 16);
-  const detail = row.addStack(); detail.layoutVertically();
-  text(detail, small ? "left" : entry.label || "Usage", small ? 12 : 13, colors.secondary);
-  if (!small) {
-    detail.addSpacer(5);
-    text(detail, percentLabel(entry.remainingPercent), 25, colors.text);
-    detail.addSpacer(5);
-    text(detail, resetLabel(entry.resetsAt, now), 10.5, colors.muted);
-  }
-  if (small) {
-    parent.addSpacer(4);
-    text(parent, resetLabel(entry.resetsAt, now).replace("重置时间已到 · 待刷新", "已到重置时间"), 10, colors.muted);
-  }
 }
 
 function text(parent, value, size, color) {
@@ -668,12 +720,16 @@ function effectiveStatus(snapshot, settings, now) {
 function footerLabel(snapshot, status, small) {
   if (status === "empty") return "未配置 · 无刷新记录";
   const demo = snapshot.isDemo ? "示例 · " : "";
-  if (timestamp(snapshot.updatedAt) === null) return demo + "尚无成功刷新";
-  const time = beijingTime(snapshot.updatedAt, small);
+  const times = [snapshot.updatedAt, snapshot.tokens?.updatedAt].map(timestamp).filter(value => value !== null);
   const errors = { AUTH: "验证失败", RATE: "请求限流", NETWORK: "网络失败", CONNECT: "连接失败", TIMEOUT: "请求超时", DNS: "域名异常", FORMAT: "格式异常", SERVER: "服务异常", REDIRECT: "地址跳转" };
-  const tag = snapshot.errorCode ? errors[snapshot.errorCode] || "刷新失败" : status === "stale" ? "已过期" : snapshot.cacheWarning ? "未保存" : snapshot.restricted ? "受限" : "";
+  if (!times.length) return demo + (snapshot.errorCode ? (errors[snapshot.errorCode] || "刷新失败") + " · " : "") + (small ? "未成功刷新" : "尚无成功刷新");
+  // 用两类数据中较早的成功时间，避免新额度掩盖较旧的用量。
+  const time = beijingTime(new Date(Math.min(...times)).toISOString(), small);
+  const tokens = snapshot.tokens;
+  const tokenTag = tokens?.errorCode || tokens?.status === "error" ? "用量未更新" : tokens?.status === "stale" ? "用量过期" : tokens?.cacheWarning ? "用量未保存" : "";
+  const tag = snapshot.errorCode ? errors[snapshot.errorCode] || "刷新失败" : snapshot.missingWindow ? "窗口无数据" : status === "stale" ? "已过期" : tokenTag || (snapshot.cacheWarning ? "未保存" : snapshot.restricted ? "受限" : "");
   if (small) return demo + (tag ? time + " · " + tag : "更新 " + time);
-  return demo + "上次刷新 " + time + (tag ? " · " + tag : "");
+  return demo + "更新 " + time + (tag ? " · " + tag : "");
 }
 
 // 用代码绘制接近参考图的终端徽标；无外部图片请求。
@@ -745,21 +801,83 @@ function header(widget, family, colors, compact) {
   row.addSpacer(6);
   text(row, "Codex", compact ? 14 : 16, colors.text);
   row.addSpacer();
-  if (family !== "small") text(row, "Usage limits", 12, colors.secondary);
+  if (family !== "small") text(row, "额度与 Token", compact ? 9 : 10, colors.secondary);
 }
 
-function quotaBlock(parent, entry, family, colors, now, compact) {
-  const small = family === "small", large = family === "large";
-  text(parent, entry.label || "Usage", compact ? 11 : small ? 12 : 13, colors.secondary);
-  parent.addSpacer(compact ? 2 : 3);
-  text(parent, percentLabel(entry.remainingPercent), compact ? 26 : large ? 34 : small ? 28 : 29, colors.text);
-  parent.addSpacer(compact ? 5 : 7);
-  progressBar(parent, entry.remainingPercent, colors);
-  parent.addSpacer(compact ? 5 : 6);
-  // 各尺寸均保留小时和分钟，小号仅简化已到重置时间的提示。
-  let reset = resetLabel(entry.resetsAt, now);
-  if (small) reset = reset.replace("重置时间已到 · 待刷新", "已到重置时间");
-  text(parent, reset, compact ? 10 : small ? 10.5 : 11.5, colors.muted);
+function formatTokenAmount(value) {
+  if (!Number.isSafeInteger(value) || value < 0) return { number: "—", unit: "" };
+  if (value >= 100000000) return { number: String(Number((value / 100000000).toFixed(2))), unit: "亿" };
+  if (value >= 10000) {
+    const count = Number((value / 10000).toFixed(1));
+    return count >= 10000 ? { number: "1", unit: "亿" } : { number: String(count), unit: "万" };
+  }
+  return { number: String(value), unit: "" };
+}
+
+function tokenMetric(tokens, key) {
+  const payload = tokens?.payload;
+  const value = key === "lifetime" ? payload?.lifetimeTokens : payload?.[key]?.tokens;
+  return { label: TOKEN_METRICS[key], value: value ?? null, partial: value != null && key !== "lifetime" && payload?.[key]?.complete === false };
+}
+
+function tokenAmount(parent, metric, size, colors) {
+  const amount = formatTokenAmount(metric.value), row = parent.addStack();
+  row.bottomAlignContent();
+  text(row, amount.number, size, colors.text);
+  if (amount.unit) { row.addSpacer(1); text(row, amount.unit, Math.round(size * 0.72), colors.text); }
+  if (metric.partial) { row.addSpacer(1); text(row, "*", 9, colors.warning); }
+}
+
+function tokenGrid(parent, tokens, large, compact, colors) {
+  const row = parent.addStack(), keys = Object.keys(TOKEN_METRICS);
+  for (let column = 0; column < 2; column++) {
+    if (column) row.addSpacer();
+    const col = row.addStack(); col.layoutVertically();
+    col.size = new Size(large ? 104 : compact ? 60 : 76, 0);
+    for (let item = 0; item < 2; item++) {
+      if (item) col.addSpacer(large ? compact ? 10 : 15 : 9);
+      const metric = tokenMetric(tokens, keys[item * 2 + column]);
+      text(col, metric.label, large && !compact ? 11 : 10, colors.secondary);
+      col.addSpacer(large ? compact ? 3 : 4 : 2);
+      tokenAmount(col, metric, large ? compact ? 22 : 24 : compact ? 17 : 19, colors);
+    }
+  }
+}
+
+function tokenNote(tokens) {
+  if (!tokens?.payload) return "Token 用量暂不可用";
+  if (tokens.status === "stale" || tokens.errorCode) return "Token 用量为上次成功缓存";
+  if (Object.keys(TOKEN_METRICS).some(key => tokenMetric(tokens, key).partial)) return "*部分日期缺失 · 仅合计已返回日期";
+  if (Object.keys(TOKEN_METRICS).every(key => tokenMetric(tokens, key).value === null)) return "暂无 Token 用量记录";
+  return "";
+}
+
+function divider(parent, colors, vertical = false) {
+  const line = parent.addStack();
+  line.size = new Size(vertical ? 1 : 0, vertical ? 75 : 1);
+  line.backgroundColor = colors.track;
+  if (!vertical) line.addSpacer();
+}
+
+function overviewQuota(parent, entry, settings, colors, now, size, tiny = false) {
+  const large = size === "large";
+  text(parent, entry.label || "Usage", large ? tiny ? 10 : 11 : tiny ? 9.5 : 10.5, colors.secondary);
+  parent.addSpacer(tiny ? 1 : 2);
+  if (settings.layout === "dashboard") {
+    const diameter = large ? tiny ? 54 : 68 : tiny ? 36 : 44;
+    const image = parent.addImage(quotaRing(entry.remainingPercent, colors, diameter));
+    image.imageSize = new Size(diameter, diameter);
+  } else {
+    const row = parent.addStack(); row.bottomAlignContent();
+    const label = percentLabel(entry.remainingPercent);
+    text(row, label.replace(" left", ""), large ? tiny ? 28 : 32 : tiny ? 22 : 27, colors.text);
+    if (label !== "—") { row.addSpacer(3); text(row, "left", large ? 15 : 12, colors.text); }
+    parent.addSpacer(large ? tiny ? 6 : 8 : tiny ? 3 : 4);
+    progressBar(parent, entry.remainingPercent, colors);
+  }
+  parent.addSpacer(large ? tiny ? 5 : 7 : tiny ? 3 : 4);
+  const reset = resetLabel(entry.resetsAt, now).replace(/^Resets in (.+)$/, "$1后重置").replace("重置时间已到 · 待刷新", "已到重置时间");
+  text(parent, reset, large ? tiny ? 9 : 10 : tiny ? 8.5 : 9, colors.muted);
 }
 
 function renderWidget(snapshot, settings, family, now = Date.now()) {
@@ -767,7 +885,8 @@ function renderWidget(snapshot, settings, family, now = Date.now()) {
   const colors = layoutColors(settings);
   const small = family === "small", large = family === "large";
   const screen = Device.screenSize();
-  const compact = !large && Math.min(screen.width, screen.height) < 390;
+  const narrow = Math.min(screen.width, screen.height) < 390;
+  const compact = !large && narrow, tiny = Math.min(screen.width, screen.height) < 350;
   widget.backgroundColor = colors.background;
   if (settings.layout === "gradient") {
     const background = new LinearGradient();
@@ -776,55 +895,58 @@ function renderWidget(snapshot, settings, family, now = Date.now()) {
     background.startPoint = new Point(0, 0); background.endPoint = new Point(1, 1);
     widget.backgroundGradient = background;
   }
-  widget.setPadding(compact ? 12 : large ? 18 : 15, compact ? 12 : small ? 16 : 18, compact ? 8 : large ? 16 : 11, compact ? 12 : small ? 16 : 18);
+  widget.setPadding(small ? compact ? 12 : 13 : large ? tiny ? 14 : 18 : 15, compact ? 12 : small ? 15 : 18, compact ? 8 : large ? tiny ? 12 : 15 : 11, compact ? 12 : small ? 15 : 18);
   widget.refreshAfterDate = new Date(Math.max(now + settings.refreshSeconds * 1000, snapshot.retryAt || 0));
   widget.url = widgetTapURL(settings, family);
   header(widget, family, colors, compact);
-  widget.addSpacer(compact ? 6 : large ? 22 : small ? 8 : 10);
+  widget.addSpacer(small ? tiny ? 3 : 5 : large ? tiny ? 10 : narrow ? 14 : 18 : 12);
 
   // 示例使用固定的时钟，确保显示的示例时间不会冒充本次成功刷新。
   const referenceNow = snapshot.isDemo ? DEMO_NOW : now;
   const status = effectiveStatus(snapshot, settings, referenceNow);
+  const tokens = snapshot.tokens ? { ...snapshot.tokens, status: effectiveStatus(snapshot.tokens, settings, referenceNow) } : null;
   const windows = Array.isArray(snapshot.windows) ? snapshot.windows : [];
   const shown = chooseWindows(windows, settings.window, large);
-
-  if (shown.length && status !== "empty" && status !== "error") {
-    for (let i = 0; i < shown.length; i++) {
-      if (i > 0) {
-        widget.addSpacer(18);
-        const divider = widget.addStack();
-        divider.size = new Size(0, 1);
-        divider.backgroundColor = colors.track;
-        divider.addSpacer();
-        widget.addSpacer(18);
-      }
-      if (settings.layout === "dashboard") dashboardBlock(widget, shown[i], family, colors, referenceNow, compact);
-      else quotaBlock(widget, shown[i], family, colors, referenceNow, compact);
+  const placeholder = { label: settings.window === "session" ? "5-hour" : settings.window === "weekly" ? "Weekly" : "Usage", remainingPercent: null, resetsAt: null };
+  const entry = shown[0] || placeholder;
+  if (large) {
+    const row = widget.addStack();
+    const entries = shown.length ? shown : [placeholder];
+    for (let i = 0; i < entries.length; i++) {
+      if (i) row.addSpacer();
+      const col = row.addStack(); col.layoutVertically();
+      col.size = new Size(tiny ? 110 : narrow ? 122 : 132, 0);
+      overviewQuota(col, entries[i], settings, colors, referenceNow, "large", narrow);
     }
-    if (large && shown.length === 1 && !snapshot.isDemo) {
-      widget.addSpacer(24);
-      text(widget, "重置于 " + beijingTime(shown[0].resetsAt, false), 12, colors.secondary);
-      if (snapshot.availableResetCount !== null && snapshot.availableResetCount !== undefined) {
-        widget.addSpacer(8);
-        text(widget, "可用重置次数 " + snapshot.availableResetCount, 12, colors.secondary);
-      }
-    }
+    widget.addSpacer(narrow ? 12 : 17); divider(widget, colors); widget.addSpacer(narrow ? 10 : 13);
+    text(widget, "TOKEN 用量", 10, colors.secondary);
+    widget.addSpacer(narrow ? 8 : 12);
+    tokenGrid(widget, tokens, true, narrow, colors);
+    const note = tokenNote(tokens);
+    if (note) { widget.addSpacer(narrow ? 6 : 8); text(widget, note, 9, colors.warning); }
+  } else if (small) {
+    overviewQuota(widget, entry, settings, colors, referenceNow, family, tiny);
+    widget.addSpacer(tiny ? 4 : 5); divider(widget, colors); widget.addSpacer(tiny ? 3 : 4);
+    const row = widget.addStack(); row.centerAlignContent();
+    const metric = tokenMetric(tokens, settings.smallMetric || "thisMonth");
+    text(row, metric.label + " Token", tiny ? 8.5 : 9.5, colors.secondary);
+    row.addSpacer();
+    tokenAmount(row, metric, tiny ? 13 : 14, colors);
   } else {
-    const empty = status === "empty";
-    text(widget, settings.window === "weekly" ? "Weekly" : "Usage", compact ? 11 : 12, colors.secondary);
-    widget.addSpacer(compact ? 2 : 3);
-    text(widget, "—", compact ? 26 : 28, colors.text);
-    widget.addSpacer(compact ? 5 : 7);
-    progressBar(widget, null, colors);
-    widget.addSpacer(compact ? 5 : 6);
-    const message = empty ? "请打开脚本设置接口" : status === "error" ? small ? compactError(snapshot.errorCode) : usageError(snapshot.errorCode || "NETWORK").message : "此额度窗口暂无数据";
-    text(widget, message, small ? 10 : 12, colors.muted);
+    const body = widget.addStack();
+    const quota = body.addStack(); quota.layoutVertically(); quota.size = new Size(tiny ? 89 : compact ? 96 : 110, 0);
+    overviewQuota(quota, entry, settings, colors, referenceNow, family);
+    body.addSpacer(compact ? 9 : 12); divider(body, colors, true); body.addSpacer(compact ? 9 : 12);
+    const metrics = body.addStack(); metrics.layoutVertically();
+    metrics.addSpacer();
+    tokenGrid(metrics, tokens, false, compact, colors);
   }
+  // 各尺寸统一在页脚说明失败或缺失状态，保留额度和用量的位置。
   widget.addSpacer();
-  widget.addSpacer(compact ? 4 : 6);
+  widget.addSpacer(small ? tiny ? 3 : 4 : 6);
   const footer = small ? widget : widget.addStack();
   if (!small) footer.centerAlignContent();
-  text(footer, footerLabel(snapshot, status, small), compact ? 8.5 : small ? 9 : 10, status === "stale" || status === "error" || snapshot.cacheWarning || snapshot.restricted ? colors.warning : colors.muted);
+  text(footer, footerLabel({ ...snapshot, tokens, missingWindow: !shown.length }, status, small), small ? tiny ? 8 : 8.5 : compact ? 8.5 : 9, !shown.length || status === "stale" || status === "error" || snapshot.cacheWarning || snapshot.restricted || tokens?.status === "stale" || tokens?.status === "error" || tokens?.cacheWarning ? colors.warning : colors.muted);
   if (!small) {
     footer.addSpacer();
     const update = text(footer, "更新 ↗", 9, colors.secondary);
@@ -912,8 +1034,8 @@ async function main() {
     } else if (!force) {
       const menu = new Alert();
       menu.title = "Codex Usage · " + VERSION;
-      menu.message = "当前每 " + settings.refreshSeconds + " 秒申请刷新。立即刷新会请求服务端重新读取额度；桌面刷新时机由 iOS 决定。";
-      ["预览小号", "预览中号", "预览大号", "立即刷新", "设置接口 / API Key", "刷新间隔（" + settings.refreshSeconds + " 秒）", "预览示例（不请求接口）", "一键更新脚本", "恢复更新前版本", "外观布局（" + LAYOUTS[settings.layout] + "）"].forEach(label => menu.addAction(label));
+      menu.message = "当前每 " + settings.refreshSeconds + " 秒申请刷新。立即刷新会重新读取额度和 Token 用量；桌面刷新时机由 iOS 决定。";
+      ["预览小号", "预览中号", "预览大号", "立即刷新", "设置接口 / API Key", "刷新间隔（" + settings.refreshSeconds + " 秒）", "预览示例（不请求接口）", "一键更新脚本", "恢复更新前版本", "外观布局（" + LAYOUTS[settings.layout] + "）", "小号 Token（" + TOKEN_METRICS[settings.smallMetric] + "）"].forEach(label => menu.addAction(label));
       menu.addCancelAction("取消");
       const choice = await menu.presentSheet();
       if (choice < 0) return;
@@ -936,11 +1058,17 @@ async function main() {
         if (!layout) return;
         settings = { ...settings, layout, layoutOverride: null };
       }
+      if (choice === 10) {
+        const smallMetric = await configureSmallMetric();
+        if (!smallMetric) return;
+        settings = { ...settings, smallMetric };
+        family = "small";
+      }
     }
   }
 
   const widget = FAMILIES.includes(family)
-    ? renderWidget(await loadUsage(settings, { force }), settings, family)
+    ? renderWidget(await loadDashboard(settings, { force }), settings, family)
     : renderNotice("请添加小号、中号或大号桌面组件。");
   Script.setWidget(widget);
   if (config.runsInApp) await widget[{ small: "presentSmall", medium: "presentMedium", large: "presentLarge" }[family] || "presentMedium"]();
