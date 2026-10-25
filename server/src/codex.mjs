@@ -32,7 +32,7 @@ export function findCodex(explicitPath = '') {
   throw new UsageError('CODEX_NOT_FOUND', '找不到 Codex 可执行文件，请设置 codexPath 或 CODEX_BIN。', 503);
 }
 
-export function readCodexUsage({ codexPath = '', timeoutSeconds = 20, signal } = {}, spawnProcess = spawn) {
+function readCodexRpc(method, { codexPath = '', timeoutSeconds = 20, signal } = {}, spawnProcess = spawn) {
   return new Promise((resolve, reject) => {
     let child;
     try {
@@ -81,7 +81,7 @@ export function readCodexUsage({ codexPath = '', timeoutSeconds = 20, signal } =
         if (!Object.hasOwn(message, 'result')) return;
         initialized = true;
         send({ method: 'initialized', params: {} });
-        send({ id: 2, method: 'account/rateLimits/read', params: {} });
+        send({ id: 2, method, params: {} });
       } else if (message.id === 2 && initialized) {
         if (message.error) {
           finish(new UsageError('CODEX_USAGE_UNAVAILABLE', '无法读取额度，请确认 Codex 已通过 ChatGPT 登录并可联网。'));
@@ -102,6 +102,12 @@ export function readCodexUsage({ codexPath = '', timeoutSeconds = 20, signal } =
     } });
   });
 }
+
+export const readCodexUsage = (options, spawnProcess) =>
+  readCodexRpc('account/rateLimits/read', options, spawnProcess);
+
+export const readCodexTokenUsage = (options, spawnProcess) =>
+  readCodexRpc('account/usage/read', options, spawnProcess);
 
 const numberOrNull = value => Number.isFinite(value) ? value : null;
 const stringOrNull = value => typeof value === 'string' ? value : null;

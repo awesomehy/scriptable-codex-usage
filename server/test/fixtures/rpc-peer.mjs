@@ -17,5 +17,9 @@ lines.on('line', line => {
     stage++;
     if (mode === 'error') send({ id: message.id, error: { code: -1, message: 'private-token' } });
     else send({ id: message.id, result: { rateLimits: { limitId: 'codex', primary: { usedPercent: 42 } } } });
+  } else if (stage === 2 && message.method === 'account/usage/read') {
+    stage++;
+    if (mode === 'error') send({ id: message.id, error: { code: -1, message: 'private-token' } });
+    else send({ id: message.id, result: { summary: { lifetimeTokens: 1234 }, dailyUsageBuckets: [{ startDate: '2026-10-24', tokens: 42 }] } });
   } else process.exit(2);
 });

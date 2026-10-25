@@ -2,7 +2,7 @@
 
 与仓库根目录的 [Scriptable 小组件](../README.md) 配套使用，也可供其他项目通过 HTTP 调用。使用 Node.js 内置模块，无第三方依赖。
 
-通过本机 `codex app-server` 的 `account/rateLimits/read` 读取当前登录账号的额度。由 Codex 自己处理登录凭据，API 不读取或输出登录令牌，也不发起模型对话。返回的是账号共享额度，不是某个项目的 token 消耗量。
+通过本机 `codex app-server` 的 `account/rateLimits/read` 读取额度，并通过 `account/usage/read` 读取账号 token 活动汇总及每日记录。由 Codex 自己处理登录凭据，API 不读取或输出登录令牌，也不发起模型对话。返回的是账号共享数据，不是某个项目的单独消耗量。
 
 ## 环境要求
 
@@ -27,6 +27,7 @@ node src/server.mjs
 ```powershell
 Invoke-RestMethod 'http://localhost:58321/health'
 Invoke-RestMethod 'http://localhost:58321/api/usage'
+Invoke-RestMethod 'http://localhost:58321/api/token-usage'
 ```
 
 已有个人配置时直接编辑 `config.json`，不要用模板覆盖。该文件已加入 `.gitignore`。
@@ -68,6 +69,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
 | --- | --- | --- |
 | GET | `/api/usage` | 查询额度，默认缓存最多 30 秒 |
 | GET | `/api/usage?refresh=1` | 强制读取最新额度 |
+| GET | `/api/token-usage` | 查询累计、本月、近 7 个日历日及昨日的 token 用量 |
+| GET | `/api/token-usage?refresh=1` | 强制读取最新 token 用量 |
 | GET | `/health` | HTTP 服务健康检查，不代表 Codex 已登录或额度可用 |
 | GET | `/` | 返回服务与接口信息 |
 
@@ -79,7 +82,42 @@ Authorization: Bearer YOUR_API_KEY
 
 用真实 Key 替换占位符。不要把 Key 放在 URL 查询参数里。浏览器地址栏直接打开额度接口不会附带请求头，因此会返回 `401`。测试连通性可以直接访问 `/health`。
 
-缓存按请求触发：过期后的下一次请求刷新数据，无访问时不轮询；并发查询合并。读取失败返回错误并清除旧快照，普通失败请求有 5 秒重试间隔，`refresh=1` 可以立即重试。切换 Codex 账号后可强制刷新，避免在缓存有效期内看到之前的账号数据。
+两类数据分别缓存，按请求触发：过期后的下一次请求刷新数据，无访问时不轮询；同类并发查询合并。读取失败返回错误并清除该类旧快照，普通失败请求有 5 秒重试间隔，`refresh=1` 可以立即重试。切换 Codex 账号后应分别强制刷新，避免在缓存有效期内看到之前的账号数据。
+
+### Token 用量
+
+`/api/token-usage` 一次返回四项查询结果。示例中的数字和日期均为虚构数据：
+
+```json
+{
+  "ok": true,
+  "source": "codex-app-server",
+  "fetchedAt": "2026-10-05T04:00:00.000Z",
+  "cached": false,
+  "ageSeconds": 0,
+  "cacheTtlSeconds": 30,
+  "lifetimeTokens": 12345,
+  "asOfDate": "2026-10-05",
+  "serverTimeZone": "Asia/Shanghai",
+  "thisMonth": {
+    "tokens": 110, "startDate": "2026-10-01", "endDate": "2026-10-05",
+    "reportedDays": 3, "missingDates": ["2026-10-02", "2026-10-03"], "complete": false
+  },
+  "last7Days": {
+    "tokens": 120, "startDate": "2026-09-29", "endDate": "2026-10-05",
+    "reportedDays": 4, "missingDates": ["2026-09-29", "2026-10-02", "2026-10-03"], "complete": false
+  },
+  "yesterday": {
+    "tokens": 40, "startDate": "2026-10-04", "endDate": "2026-10-04",
+    "reportedDays": 1, "missingDates": [], "complete": true
+  },
+  "dailyCoverage": { "firstDate": "2026-09-30", "lastDate": "2026-10-05", "reportedDays": 4 }
+}
+```
+
+`lifetimeTokens` 直接来自 Codex 的累计汇总，可能为 `null`。`thisMonth` 从服务器本地时区的本月 1 日算至今日；`last7Days` 包含今日及前 6 个日历日；`yesterday` 是服务器本地时区的昨日。上游每日记录的日期时区未在协议中明确规定，所以日界线可能与本机时区不同。
+
+各周期的 `tokens` 是**已返回日期的合计**；`complete: false` 表示存在未返回的日期，合计可能偏低。`missingDates` 列出这些日期，不能直接将其视为零用量。周期内没有任何记录时 `tokens` 为 `null`。`dailyCoverage` 说明上游实际返回的日期跨度，历史长度不保证；今天的数据也可能尚未返回。此接口不按设备、项目或模型拆分，也不能从额度百分比推算 token 数。
 
 ## 调用示例
 
@@ -89,6 +127,7 @@ Authorization: Bearer YOUR_API_KEY
 
 ```bash
 curl 'https://codex-api.example.com/api/usage' -H 'Authorization: Bearer YOUR_API_KEY'
+curl 'https://codex-api.example.com/api/token-usage' -H 'Authorization: Bearer YOUR_API_KEY'
 ```
 
 Windows PowerShell 可使用 `curl.exe`，避免旧版 PowerShell 的别名影响。强制刷新时在地址后添加 `?refresh=1`，保持鉴权头。
@@ -119,6 +158,20 @@ const data = await response.json();
 if (!response.ok) throw new Error(data.error.message);
 const codex = data.limits.find(item => item.limitId === 'codex');
 console.log(codex?.primary?.remainingPercent);
+
+const tokenResponse = await fetch('https://codex-api.example.com/api/token-usage', {
+  headers: { Authorization: `Bearer ${apiKey}` },
+  signal: AbortSignal.timeout(30000)
+});
+const tokenData = await tokenResponse.json();
+if (!tokenResponse.ok) throw new Error(tokenData.error.message);
+console.log({
+  lifetime: tokenData.lifetimeTokens,
+  month: tokenData.thisMonth.tokens,
+  last7Days: tokenData.last7Days.tokens,
+  yesterday: tokenData.yesterday.tokens,
+  monthComplete: tokenData.thisMonth.complete
+});
 ```
 
 ### Python（标准库）

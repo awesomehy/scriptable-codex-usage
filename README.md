@@ -1,6 +1,6 @@
 # Codex Usage · Scriptable 小组件与本地 API
 
-在 iPhone 桌面查看 Codex 账号额度。仓库同时包含 **Scriptable 小组件**和配套的 **Node.js 本地 API**：电脑读取当前登录账号的额度，手机通过自己的服务地址读取并展示。小组件版本 **1.0.5**，支持小号、中号、大号，以及四种可选布局。
+在 iPhone 桌面查看 Codex 账号额度。仓库同时包含 **Scriptable 小组件**和配套的 **Node.js 本地 API**：电脑读取当前登录账号的数据，手机通过自己的服务地址读取并展示额度；其他项目也可以查询累计、本月、近 7 日和昨日 token 用量。小组件版本 **1.0.5**，支持小号、中号、大号，以及四种可选布局。
 
 [查看脚本](https://github.com/awesomehy/scriptable-codex-usage/blob/main/CodexUsage.js) · [下载源码](https://raw.githubusercontent.com/awesomehy/scriptable-codex-usage/main/CodexUsage.js)
 
@@ -18,7 +18,7 @@ tests/                   小组件及前后端数据契约测试
 scripts/                 小组件预览、更新清单生成脚本
 ```
 
-数据流：**电脑上已登录的 Codex → 本地 API → Scriptable → iOS 桌面小组件**。展示的是当前账号共享额度，不是这台电脑单独消耗的 token 数；服务只查询额度，不发起模型对话。
+数据流：**电脑上已登录的 Codex → 本地 API → Scriptable → iOS 桌面小组件**。小组件展示当前账号共享额度；API 另提供账号级 token 汇总，不是这台电脑或某个项目单独消耗的 token 数。服务只查询数据，不发起模型对话。
 
 ## 1. 部署配套 API
 
@@ -48,13 +48,16 @@ Invoke-RestMethod 'http://localhost:58321/health'
 Invoke-RestMethod 'http://localhost:58321/api/usage' -Headers @{
     Authorization = "Bearer $($config.apiKey)"
 }
+Invoke-RestMethod 'http://localhost:58321/api/token-usage' -Headers @{
+    Authorization = "Bearer $($config.apiKey)"
+}
 ```
 
 小组件所在的手机需要能访问这台电脑。局域网内使用电脑的局域网地址；跨网络时配置你自己的域名、路由器 TCP 端口转发及防火墙，并为公网入口配置 HTTPS。`localhost` 在手机上指手机本身，不能作为电脑的访问地址。
 
 手机中填写的完整接口地址类似 `https://codex-api.example.com/api/usage`，该地址仅为占位示例，仓库不提供公共额度服务。域名、端口和协议应替换为自己的部署值。浏览器直接访问额度接口缺少 Bearer 请求头时会返回 `401`，可先访问 `/health` 检查连通性。
 
-详细配置、接口字段、调用示例和排错见 **[API 部署与使用文档](server/README.md)**。电脑需保持开机且服务运行；当前后台脚本不设置 Windows 开机自启。
+Token 用量接口 `GET /api/token-usage` 返回 `lifetimeTokens`、`thisMonth`、`last7Days`、`yesterday`；日期缺失时周期合计标记为不完整。详细配置、接口字段、调用示例和排错见 **[API 部署与使用文档](server/README.md)**。电脑需保持开机且服务运行；当前后台脚本不设置 Windows 开机自启。
 
 ## 2. 安装或升级 Scriptable 小组件
 

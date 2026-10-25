@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { readCodexUsage } from '../src/codex.mjs';
+import { readCodexUsage, readCodexTokenUsage } from '../src/codex.mjs';
 
 const fixture = fileURLToPath(new URL('./fixtures/rpc-peer.mjs', import.meta.url));
 function peer(mode, children) {
@@ -23,6 +23,14 @@ test('RPC handshake precedes quota query and child exits after successful read',
   assert.ok(children[0].exitCode !== null || children[0].signalCode !== null);
 });
 
+test('token activity uses the separate read-only RPC method', async () => {
+  const children = [];
+  const data = await readCodexTokenUsage({ codexPath: process.execPath }, peer('success', children));
+  assert.equal(data.summary.lifetimeTokens, 1234);
+  assert.deepEqual(data.dailyUsageBuckets, [{ startDate: '2026-10-24', tokens: 42 }]);
+  if (children[0].exitCode === null && children[0].signalCode === null) await once(children[0], 'exit');
+});
+
 test('nonexistent Codex executable returns a safe startup error', async () => {
   await assert.rejects(readCodexUsage({ codexPath: 'nonexistent-codex-test-executable', timeoutSeconds: 1 }), { code: 'CODEX_START_FAILED' });
 });
@@ -36,6 +44,8 @@ test('RPC client times out and terminates a silent child', async () => {
 
 test('RPC error is sanitized and an unexpected exit is reported', async () => {
   await assert.rejects(readCodexUsage({ codexPath: process.execPath }, peer('error', [])), error =>
+    error.code === 'CODEX_USAGE_UNAVAILABLE' && !error.message.includes('private-token'));
+  await assert.rejects(readCodexTokenUsage({ codexPath: process.execPath }, peer('error', [])), error =>
     error.code === 'CODEX_USAGE_UNAVAILABLE' && !error.message.includes('private-token'));
   await assert.rejects(readCodexUsage({ codexPath: process.execPath }, peer('exit', [])), { code: 'CODEX_EXITED' });
 });

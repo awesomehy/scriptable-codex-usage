@@ -2,14 +2,20 @@ import { createServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { loadConfig, isLoopback, projectRoot } from './config.mjs';
-import { readCodexUsage, normalizeUsage, UsageError } from './codex.mjs';
+import { readCodexUsage, readCodexTokenUsage, normalizeUsage, UsageError } from './codex.mjs';
+import { normalizeTokenUsage } from './tokens.mjs';
 
-export function createUsageService(config, reader = readCodexUsage) {
+export function createUsageService(config, reader = readCodexUsage, tokenReader = readCodexTokenUsage) {
   let snapshot = null;
   let fetchedAt = 0;
   let pending = null;
   let lastFailure = null;
   let retryAt = 0;
+  let tokenSnapshot = null;
+  let tokenFetchedAt = 0;
+  let tokenPending = null;
+  let tokenFailure = null;
+  let tokenRetryAt = 0;
   const abortController = new AbortController();
   const getUsage = async force => {
     const age = Date.now() - fetchedAt;
@@ -35,6 +41,27 @@ export function createUsageService(config, reader = readCodexUsage) {
       }
     })();
     try { await pending; } finally { pending = null; }
+    return false;
+  };
+  const getTokenUsage = async force => {
+    const today = new Date();
+    const localToday = [today.getFullYear(), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0')].join('-');
+    if (!force && tokenSnapshot?.asOfDate === localToday && Date.now() - tokenFetchedAt < config.cacheTtlSeconds * 1000) return true;
+    if (tokenPending) { await tokenPending; return false; }
+    if (!force && tokenFailure && Date.now() < tokenRetryAt) throw tokenFailure;
+    tokenPending = (async () => {
+      try {
+        tokenSnapshot = normalizeTokenUsage(await tokenReader({ ...config, signal: abortController.signal }));
+        tokenFetchedAt = Date.now();
+        tokenFailure = null;
+      } catch (error) {
+        tokenSnapshot = null;
+        tokenFailure = error;
+        tokenRetryAt = Date.now() + 5000;
+        throw error;
+      }
+    })();
+    try { await tokenPending; } finally { tokenPending = null; }
     return false;
   };
   const server = createServer(async (request, response) => {
@@ -79,7 +106,20 @@ export function createUsageService(config, reader = readCodexUsage) {
         }
       }
       if (url.pathname === '/') {
-        send(200, { service: 'codex-usage-api', endpoints: { usage: '/api/usage', refresh: '/api/usage?refresh=1', health: '/health' } }); return;
+        send(200, { service: 'codex-usage-api', endpoints: { usage: '/api/usage', refresh: '/api/usage?refresh=1', tokenUsage: '/api/token-usage', tokenRefresh: '/api/token-usage?refresh=1', health: '/health' } }); return;
+      }
+      if (url.pathname === '/api/token-usage') {
+        const cached = await getTokenUsage(url.searchParams.get('refresh') === '1');
+        send(200, {
+          ok: true,
+          source: 'codex-app-server',
+          fetchedAt: new Date(tokenFetchedAt).toISOString(),
+          cached,
+          ageSeconds: Math.floor((Date.now() - tokenFetchedAt) / 1000),
+          cacheTtlSeconds: config.cacheTtlSeconds,
+          ...tokenSnapshot,
+        });
+        return;
       }
       if (url.pathname !== '/api/usage') { fail(404, 'NOT_FOUND', '接口不存在。'); return; }
       const cached = await getUsage(url.searchParams.get('refresh') === '1');
@@ -94,7 +134,7 @@ export function createUsageService(config, reader = readCodexUsage) {
       });
     } catch (error) {
       if (error instanceof UsageError) fail(error.status, error.code, error.message);
-      else fail(502, 'USAGE_FETCH_FAILED', '读取额度失败，请检查本地 Codex 配置和网络。');
+      else fail(502, 'USAGE_FETCH_FAILED', '读取 Codex 数据失败，请检查本地配置和网络。');
     }
   });
   server.requestTimeout = (config.timeoutSeconds + 5) * 1000;
