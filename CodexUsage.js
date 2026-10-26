@@ -1,12 +1,12 @@
 // Variables used by Scriptable.
 // icon-color: blue; icon-glyph: chart-bar;
 // CODEX_USAGE_WIDGET
-// version: 1.0.7
+// version: 1.0.8
 // Codex Usage
 // 独立脚本：全部复制到 Scriptable，命名为 CodexUsage。
 // 首次运行设置 API Key。密钥仅保存到 Scriptable Keychain，不要写入脚本或组件参数。
 
-const VERSION = "1.0.7";
+const VERSION = "1.0.8";
 const REPOSITORY = "awesomehy/scriptable-codex-usage";
 const CONNECTION_KEY = "CodexUsage.connection.v1";
 const PREFERENCES_KEY = "CodexUsage.preferences.v1";
@@ -806,7 +806,7 @@ function header(widget, family, colors, compact) {
 
 function formatTokenAmount(value) {
   if (!Number.isSafeInteger(value) || value < 0) return { number: "—", unit: "" };
-  // 整数位越多，小数越少，为单位和缺失日期标记预留空间。
+  // 整数位越多，小数越少，为单位预留空间。
   const round = (count, maxDecimals) => {
     const digits = String(Math.floor(count)).length;
     return Number(count.toFixed(Math.max(0, Math.min(maxDecimals, 3 - digits))));
@@ -831,7 +831,6 @@ function tokenAmount(parent, metric, size, colors) {
   // 极大的整数仍完整保留；仅在空间不足时允许数字缩小。
   text(row, amount.number, size, colors.text).minimumScaleFactor = 0.5;
   if (amount.unit) { row.addSpacer(1); text(row, amount.unit, Math.round(size * 0.72), colors.text); }
-  if (metric.partial) { row.addSpacer(1); text(row, "*", 9, colors.warning); }
 }
 
 function tokenGrid(parent, tokens, large, compact, colors) {
@@ -853,7 +852,6 @@ function tokenGrid(parent, tokens, large, compact, colors) {
 function tokenNote(tokens) {
   if (!tokens?.payload) return "Token 用量暂不可用";
   if (tokens.status === "stale" || tokens.errorCode) return "Token 用量为上次成功缓存";
-  if (Object.keys(TOKEN_METRICS).some(key => tokenMetric(tokens, key).partial)) return "*部分日期缺失 · 仅合计已返回日期";
   if (Object.keys(TOKEN_METRICS).every(key => tokenMetric(tokens, key).value === null)) return "暂无 Token 用量记录";
   return "";
 }
