@@ -56,11 +56,11 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-tray.ps1
 ```
 
-安装脚本会立即启动监控和 API，并创建桌面 **Codex Usage API Monitor** 快捷方式、当前用户 Windows“启动”文件夹中的开机快捷方式。以后在用户登录后，监控会自动启动 API；双击桌面监控快捷方式也会启动 API，已有监控或服务时不会重复运行。安装时会移除旧的 **Codex Usage API** 直启快捷方式。
+安装脚本会注册当前用户登录时运行的 Windows 计划任务 **Codex Usage API Monitor**，立即通过计划任务启动监控和 API，并创建同名桌面快捷方式。监控由 Windows 独立启动，不依赖启动安装脚本的终端或 Codex 进程。双击桌面快捷方式也通过计划任务启动监控或已停止的 API；已有监控时不会生成第二个图标。安装时会移除旧的 **Codex Usage API** 直启快捷方式和旧的“启动”文件夹快捷方式。
 
 通知区域图标**绿色**表示本机 `/health` 返回本项目的正常响应，**红色**表示 API 未运行或无响应。右键可启动、停止、刷新状态，并切换 **“保活”**；退出图标不会停止 API。保活默认关闭，开启后每 10 秒检查服务，发现 API 未运行或无响应时自动尝试启动；连续失败时最多每 30 秒重试一次。设置保存在本机 `.runtime/monitor-settings.json`，重启监控后仍有效。右键“停止 API”会同时关闭保活，避免手动停止后立即重启；可再开启保活或用“启动 API”恢复。健康检查绕过代理。图标可能在任务栏右侧的隐藏图标区域，可在 Windows 设置中选择始终显示。
 
-配置修改后用右键菜单先停止、再启动 API。服务日志在 `.runtime/stdout.log`、`.runtime/stderr.log`，状态图标的启动错误在 `.runtime/tray-stderr.log`；这些文件不进入 Git。移除登录后自启时，删除“启动”文件夹中的 `Codex Usage API Status.lnk`，并通过图标右键菜单退出。
+配置修改后用右键菜单先停止、再启动 API。服务日志在 `.runtime/stdout.log`、`.runtime/stderr.log`，监控脚本的未处理错误在 `.runtime/tray-stderr.log`；这些文件不进入 Git。移除登录后自启时，在 Windows 任务计划程序中禁用或删除 **Codex Usage API Monitor** 任务，并通过图标右键菜单退出。
 
 ## 接口与鉴权
 

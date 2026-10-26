@@ -1,6 +1,15 @@
 ﻿$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+trap {
+    try {
+        $logDir = Join-Path (Split-Path -Parent $PSScriptRoot) '.runtime'
+        $null = New-Item -ItemType Directory -Path $logDir -Force
+        "[$(Get-Date -Format o)] $($_ | Out-String)" |
+            Add-Content -LiteralPath (Join-Path $logDir 'tray-stderr.log') -Encoding UTF8
+    } catch {}
+    break
+}
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
