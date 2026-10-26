@@ -639,6 +639,22 @@ test('Chinese token units round without trailing zeros or treating unknown as ze
   }
 });
 
+test('token precision decreases as integer digits grow, including rounding across unit boundaries', () => {
+  const { api } = harness();
+  for (const [value, expected] of [
+    [128400000, '1.28亿'], [1284000000, '12.8亿'],
+    [6568000000, '65.7亿'], [10091000000, '101亿'], [860000000, '8.6亿'],
+    [999400000, '9.99亿'], [999600000, '10亿'],
+    [9994000000, '99.9亿'], [9996000000, '100亿'],
+    [984000, '98.4万'], [999600, '100万'], [1004000, '100万'],
+    [5244000, '524万'], [99994000, '9999万'], [99996000, '1亿'],
+    [Number.MAX_SAFE_INTEGER, '90071993亿'],
+  ]) {
+    const result = api.formatTokenAmount(value);
+    assert.equal(result.number + result.unit, expected, String(value));
+  }
+});
+
 test('dashboard authenticates both paths, independently caches them and forces one refresh each', async () => {
   const h = harness({ responses: [{}, { body: tokenFixture() }, {}, { body: tokenFixture() }] });
   const first = await h.api.loadDashboard(h.settings);

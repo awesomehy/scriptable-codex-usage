@@ -1,12 +1,12 @@
 // Variables used by Scriptable.
 // icon-color: blue; icon-glyph: chart-bar;
 // CODEX_USAGE_WIDGET
-// version: 1.0.6
+// version: 1.0.7
 // Codex Usage
 // 独立脚本：全部复制到 Scriptable，命名为 CodexUsage。
 // 首次运行设置 API Key。密钥仅保存到 Scriptable Keychain，不要写入脚本或组件参数。
 
-const VERSION = "1.0.6";
+const VERSION = "1.0.7";
 const REPOSITORY = "awesomehy/scriptable-codex-usage";
 const CONNECTION_KEY = "CodexUsage.connection.v1";
 const PREFERENCES_KEY = "CodexUsage.preferences.v1";
@@ -806,9 +806,14 @@ function header(widget, family, colors, compact) {
 
 function formatTokenAmount(value) {
   if (!Number.isSafeInteger(value) || value < 0) return { number: "—", unit: "" };
-  if (value >= 100000000) return { number: String(Number((value / 100000000).toFixed(2))), unit: "亿" };
+  // 整数位越多，小数越少，为单位和缺失日期标记预留空间。
+  const round = (count, maxDecimals) => {
+    const digits = String(Math.floor(count)).length;
+    return Number(count.toFixed(Math.max(0, Math.min(maxDecimals, 3 - digits))));
+  };
+  if (value >= 100000000) return { number: String(round(value / 100000000, 2)), unit: "亿" };
   if (value >= 10000) {
-    const count = Number((value / 10000).toFixed(1));
+    const count = round(value / 10000, 1);
     return count >= 10000 ? { number: "1", unit: "亿" } : { number: String(count), unit: "万" };
   }
   return { number: String(value), unit: "" };
@@ -823,7 +828,8 @@ function tokenMetric(tokens, key) {
 function tokenAmount(parent, metric, size, colors) {
   const amount = formatTokenAmount(metric.value), row = parent.addStack();
   row.bottomAlignContent();
-  text(row, amount.number, size, colors.text);
+  // 极大的整数仍完整保留；仅在空间不足时允许数字缩小。
+  text(row, amount.number, size, colors.text).minimumScaleFactor = 0.5;
   if (amount.unit) { row.addSpacer(1); text(row, amount.unit, Math.round(size * 0.72), colors.text); }
   if (metric.partial) { row.addSpacer(1); text(row, "*", 9, colors.warning); }
 }
