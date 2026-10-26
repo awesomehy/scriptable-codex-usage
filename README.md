@@ -12,7 +12,7 @@ update.json              小组件更新清单与源码校验值
 server/                  配套额度 API，无第三方 npm 依赖
   config.example.json    通用配置模板，不含私人地址或密钥
   src/                   HTTP 服务与 Codex 读取逻辑
-  scripts/               Windows 后台启动、停止脚本
+  scripts/               Windows 后台启停与任务栏状态图标脚本
   test/                  API 与 Codex 通信测试
 tests/                   小组件及前后端数据契约测试
 scripts/                 小组件预览、更新清单生成脚本
@@ -22,7 +22,7 @@ scripts/                 小组件预览、更新清单生成脚本
 
 ## 1. 部署配套 API
 
-需要 Node.js **22 或以上**，以及已通过 ChatGPT 登录、能够联网的 Codex。Windows 提供后台启停脚本；其他系统可以直接使用 Node.js 前台运行，具体 Codex 安装和登录以本机环境为准。
+需要 Node.js **22 或以上**，以及已通过 ChatGPT 登录、能够联网的 Codex。Windows 提供后台启停脚本和任务栏通知区域状态图标；其他系统可以直接使用 Node.js 前台运行，具体 Codex 安装和登录以本机环境为准。
 
 ```powershell
 git clone https://github.com/awesomehy/scriptable-codex-usage.git
@@ -57,7 +57,7 @@ Invoke-RestMethod 'http://localhost:58321/api/token-usage' -Headers @{
 
 手机中填写的完整接口地址类似 `https://codex-api.example.com/api/usage`，该地址仅为占位示例，仓库不提供公共额度服务。域名、端口和协议应替换为自己的部署值。浏览器直接访问额度接口缺少 Bearer 请求头时会返回 `401`，可先访问 `/health` 检查连通性。
 
-Token 用量接口 `GET /api/token-usage` 返回 `lifetimeTokens`、`thisMonth`、`last7Days`、`yesterday`；日期缺失时周期合计标记为不完整。详细配置、接口字段、调用示例和排错见 **[API 部署与使用文档](server/README.md)**。电脑需保持开机且服务运行；当前后台脚本不设置 Windows 开机自启。
+Token 用量接口 `GET /api/token-usage` 返回 `lifetimeTokens`、`thisMonth`、`last7Days`、`yesterday`；日期缺失时周期合计标记为不完整。详细配置、接口字段、调用示例和排错见 **[API 部署与使用文档](server/README.md)**。Windows 可安装任务栏状态图标并从右键菜单启停 API；图标随登录启动，API 服务本身仍需手动启动。电脑需保持开机且服务运行。
 
 ## 2. 安装或升级 Scriptable 小组件
 

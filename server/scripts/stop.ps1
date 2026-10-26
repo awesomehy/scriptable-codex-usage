@@ -4,7 +4,7 @@ $pidFile = Join-Path $projectDir '.runtime\server.pid'
 $serverFile = Join-Path $projectDir 'src\server.mjs'
 if (-not (Test-Path -LiteralPath $pidFile)) {
     Write-Output 'No background server PID file found.'
-    exit 0
+    return
 }
 $recordedId = [int](Get-Content -LiteralPath $pidFile -Raw).Trim()
 $running = Get-CimInstance Win32_Process -Filter "ProcessId = $recordedId" -ErrorAction SilentlyContinue
