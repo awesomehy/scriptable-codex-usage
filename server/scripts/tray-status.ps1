@@ -13,6 +13,8 @@ public static class CodexUsageTrayNative {
 $createdNew = $false
 $mutex = [System.Threading.Mutex]::new($true, 'Local\CodexUsageApiTray', [ref]$createdNew)
 $projectDir = Split-Path -Parent $PSScriptRoot
+$runtimeDir = Join-Path $projectDir '.runtime'
+$settingsFile = Join-Path $runtimeDir 'monitor-settings.json'
 $configFile = Join-Path $projectDir 'config.json'
 $startScript = Join-Path $PSScriptRoot 'start.ps1'
 $stopScript = Join-Path $PSScriptRoot 'stop.ps1'
@@ -75,6 +77,20 @@ function Test-ApiHealth([int]$port) {
     }
 }
 
+function Read-KeepAliveState {
+    if (-not (Test-Path -LiteralPath $settingsFile)) { return $false }
+    try {
+        $settings = Get-Content -LiteralPath $settingsFile -Raw | ConvertFrom-Json
+        return ($settings.keepAlive -eq $true)
+    } catch { return $false }
+}
+
+function Save-KeepAliveState([bool]$enabled) {
+    $null = New-Item -ItemType Directory -Path $runtimeDir -Force
+    @{ keepAlive = $enabled } | ConvertTo-Json -Compress |
+        Set-Content -LiteralPath $settingsFile -Encoding UTF8
+}
+
 $runningIcon = New-StatusIcon ([System.Drawing.Color]::FromArgb(36, 172, 91))
 $stoppedIcon = New-StatusIcon ([System.Drawing.Color]::FromArgb(210, 64, 64))
 $menu = [System.Windows.Forms.ContextMenuStrip]::new()
@@ -82,12 +98,14 @@ $statusItem = [System.Windows.Forms.ToolStripMenuItem]::new('状态：检查中'
 $statusItem.Enabled = $false
 $startItem = [System.Windows.Forms.ToolStripMenuItem]::new('启动 API')
 $stopItem = [System.Windows.Forms.ToolStripMenuItem]::new('停止 API')
+$keepAliveItem = [System.Windows.Forms.ToolStripMenuItem]::new('保活：已关闭')
 $refreshItem = [System.Windows.Forms.ToolStripMenuItem]::new('刷新状态')
 $exitItem = [System.Windows.Forms.ToolStripMenuItem]::new('退出状态图标')
 [void]$menu.Items.Add($statusItem)
 [void]$menu.Items.Add([System.Windows.Forms.ToolStripSeparator]::new())
 [void]$menu.Items.Add($startItem)
 [void]$menu.Items.Add($stopItem)
+[void]$menu.Items.Add($keepAliveItem)
 [void]$menu.Items.Add($refreshItem)
 [void]$menu.Items.Add([System.Windows.Forms.ToolStripSeparator]::new())
 [void]$menu.Items.Add($exitItem)
@@ -98,14 +116,28 @@ $notify.ContextMenuStrip = $menu
 $notify.Visible = $true
 $timer = [System.Windows.Forms.Timer]::new()
 $timer.Interval = 10000
+$script:keepAliveEnabled = Read-KeepAliveState
+$script:lastRecoveryAttempt = [DateTime]::MinValue
+$keepAliveItem.Checked = $script:keepAliveEnabled
+$keepAliveItem.Text = if ($script:keepAliveEnabled) { '保活：已开启' } else { '保活：已关闭' }
 
-function Update-Status {
+function Update-Status([bool]$allowRecovery = $true) {
     $port = 58321
     $online = $false
     try {
         $port = Get-ApiPort
         $online = Test-ApiHealth $port
     } catch { $online = $false }
+    if ($allowRecovery -and -not $online -and $script:keepAliveEnabled -and
+        ([DateTime]::UtcNow - $script:lastRecoveryAttempt).TotalSeconds -ge 30) {
+        $script:lastRecoveryAttempt = [DateTime]::UtcNow
+        try {
+            $null = & $startScript 2>&1 | Out-String
+            $online = Test-ApiHealth $port
+        } catch {
+            $notify.ShowBalloonTip(4000, 'Codex Usage API', $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Error)
+        }
+    }
     $statusItem.Text = if ($online) { "状态：运行中（端口 $port）" } else { "状态：未运行或无响应（端口 $port）" }
     $notify.Text = if ($online) { 'Codex Usage API：运行中' } else { 'Codex Usage API：未运行' }
     $notify.Icon = if ($online) { $runningIcon } else { $stoppedIcon }
@@ -119,14 +151,35 @@ function Start-ApiService {
     } catch {
         $notify.ShowBalloonTip(4000, 'Codex Usage API', $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Error)
     }
-    Update-Status
+    Update-Status $false
 }
 
 $timer.Add_Tick({ Update-Status })
 $refreshItem.Add_Click({ Update-Status })
 $startItem.Add_Click({ Start-ApiService })
+$keepAliveItem.Add_Click({
+    try {
+        $enabled = -not $script:keepAliveEnabled
+        Save-KeepAliveState $enabled
+        $script:keepAliveEnabled = $enabled
+        $keepAliveItem.Checked = $enabled
+        $keepAliveItem.Text = if ($enabled) { '保活：已开启' } else { '保活：已关闭' }
+        if ($enabled) {
+            $script:lastRecoveryAttempt = [DateTime]::MinValue
+            Update-Status
+        }
+    } catch {
+        $notify.ShowBalloonTip(4000, 'Codex Usage API', $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Error)
+    }
+})
 $stopItem.Add_Click({
     try {
+        if ($script:keepAliveEnabled) {
+            Save-KeepAliveState $false
+            $script:keepAliveEnabled = $false
+            $keepAliveItem.Checked = $false
+            $keepAliveItem.Text = '保活：已关闭'
+        }
         $null = & $stopScript 2>&1 | Out-String
         Update-Status
     } catch {

@@ -56,7 +56,7 @@ Invoke-RestMethod 'http://localhost:58321/api/token-usage' -Headers @{
 
 手机中填写的完整接口地址类似 `https://codex-api.example.com/api/usage`，该地址仅为占位示例，仓库不提供公共额度服务。域名、端口和协议应替换为自己的部署值。浏览器直接访问额度接口缺少 Bearer 请求头时会返回 `401`，可先访问 `/health` 检查连通性。
 
-Token 用量接口 `GET /api/token-usage` 返回 `lifetimeTokens`、`thisMonth`、`last7Days`、`yesterday`；日期缺失时周期合计标记为不完整。详细配置、接口字段、调用示例和排错见 **[API 部署与使用文档](server/README.md)**。Windows 监控在登录后自动运行并启动 API；也可双击桌面的 **Codex Usage API Monitor**，或通过监控图标右键启停 API。电脑需保持开机且服务运行。
+Token 用量接口 `GET /api/token-usage` 返回 `lifetimeTokens`、`thisMonth`、`last7Days`、`yesterday`；日期缺失时周期合计标记为不完整。详细配置、接口字段、调用示例和排错见 **[API 部署与使用文档](server/README.md)**。Windows 监控在登录后自动运行并启动 API；也可双击桌面的 **Codex Usage API Monitor**，或通过监控图标右键启停 API、开启或关闭保活。电脑需保持开机且服务运行。
 
 ## 2. 安装或升级 Scriptable 小组件
 
