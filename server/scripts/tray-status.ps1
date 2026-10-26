@@ -12,12 +12,16 @@ public static class CodexUsageTrayNative {
 
 $createdNew = $false
 $mutex = [System.Threading.Mutex]::new($true, 'Local\CodexUsageApiTray', [ref]$createdNew)
-if (-not $createdNew) { $mutex.Dispose(); return }
-
 $projectDir = Split-Path -Parent $PSScriptRoot
 $configFile = Join-Path $projectDir 'config.json'
 $startScript = Join-Path $PSScriptRoot 'start.ps1'
 $stopScript = Join-Path $PSScriptRoot 'stop.ps1'
+if (-not $createdNew) {
+    $mutex.Dispose()
+    # A second launch from the desktop also starts a stopped API without a duplicate icon.
+    $null = & $startScript 2>&1 | Out-String
+    return
+}
 
 function New-StatusIcon([System.Drawing.Color]$fill) {
     $bitmap = [System.Drawing.Bitmap]::new(32, 32)
@@ -109,16 +113,18 @@ function Update-Status {
     $stopItem.Enabled = $online
 }
 
-$timer.Add_Tick({ Update-Status })
-$refreshItem.Add_Click({ Update-Status })
-$startItem.Add_Click({
+function Start-ApiService {
     try {
         $null = & $startScript 2>&1 | Out-String
-        Update-Status
     } catch {
         $notify.ShowBalloonTip(4000, 'Codex Usage API', $_.Exception.Message, [System.Windows.Forms.ToolTipIcon]::Error)
     }
-})
+    Update-Status
+}
+
+$timer.Add_Tick({ Update-Status })
+$refreshItem.Add_Click({ Update-Status })
+$startItem.Add_Click({ Start-ApiService })
 $stopItem.Add_Click({
     try {
         $null = & $stopScript 2>&1 | Out-String
@@ -134,7 +140,7 @@ $exitItem.Add_Click({
 })
 
 try {
-    Update-Status
+    Start-ApiService
     $timer.Start()
     [System.Windows.Forms.Application]::Run()
 } finally {

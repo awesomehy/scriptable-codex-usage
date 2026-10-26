@@ -33,11 +33,10 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 最后一条命令生成供本服务使用的随机 Key。编辑刚创建的 `server/config.json`：将 `host` 改为 `0.0.0.0`，将 `apiKey` 设为生成的值（至少 **24 个字符**），端口默认 `58321`。保留其他字段。不要用 Codex 登录令牌作为 API Key，也不要把个人配置提交到 GitHub。
 
-启动服务：
+Windows 安装任务栏监控并启动服务：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
-# 或使用前台方式：node src/server.mjs
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-tray.ps1
 ```
 
 从服务端本机测试，Key 自动读取自配置：
@@ -57,7 +56,7 @@ Invoke-RestMethod 'http://localhost:58321/api/token-usage' -Headers @{
 
 手机中填写的完整接口地址类似 `https://codex-api.example.com/api/usage`，该地址仅为占位示例，仓库不提供公共额度服务。域名、端口和协议应替换为自己的部署值。浏览器直接访问额度接口缺少 Bearer 请求头时会返回 `401`，可先访问 `/health` 检查连通性。
 
-Token 用量接口 `GET /api/token-usage` 返回 `lifetimeTokens`、`thisMonth`、`last7Days`、`yesterday`；日期缺失时周期合计标记为不完整。详细配置、接口字段、调用示例和排错见 **[API 部署与使用文档](server/README.md)**。Windows 可安装任务栏状态图标并从右键菜单启停 API；图标随登录启动，API 服务本身仍需手动启动。电脑需保持开机且服务运行。
+Token 用量接口 `GET /api/token-usage` 返回 `lifetimeTokens`、`thisMonth`、`last7Days`、`yesterday`；日期缺失时周期合计标记为不完整。详细配置、接口字段、调用示例和排错见 **[API 部署与使用文档](server/README.md)**。Windows 监控在登录后自动运行并启动 API；也可双击桌面的 **Codex Usage API Monitor**，或通过监控图标右键启停 API。电脑需保持开机且服务运行。
 
 ## 2. 安装或升级 Scriptable 小组件
 

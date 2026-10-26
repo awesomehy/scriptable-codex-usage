@@ -48,22 +48,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 在 Scriptable 首次运行时填入**完整额度接口 URL**和同一个 Key；之后通过脚本菜单“设置接口 / API Key”修改。Key 保存在手机 Keychain，不写入脚本代码或组件参数。
 
-## 后台启动、停止与重启
-
-以下命令在 `server/` 目录的 PowerShell 中执行：
-
-```powershell
-# 后台启动，关闭终端后继续运行
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
-# 停止
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\stop.ps1
-# 重启：先停止，再启动
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
-```
-
-配置修改后必须停止并重新启动才会生效。后台脚本不设置开机自启，电脑重启后需要再次启动。日志位于 `.runtime/stdout.log`、`.runtime/stderr.log`，进程记录位于 `.runtime/server.pid`；这些文件不进入 Git。
-
-### Windows 任务栏状态图标
+## Windows 任务栏监控与启动
 
 在 `server/` 目录执行：
 
@@ -71,9 +56,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-tray.ps1
 ```
 
-这会立即启动一个通知区域图标，并在当前用户的 Windows“启动”文件夹创建快捷方式，下次登录后自动显示。**绿色**表示本机 `/health` 返回本项目的正常响应，**红色**表示 API 未运行或无响应。右键图标可启动、停止或刷新 API 状态，也可只退出状态图标；退出图标不会停止 API。状态每 10 秒检查一次，检查本机地址时绕过代理。图标可能出现在任务栏右侧的隐藏图标区域，可在 Windows 设置中选择始终显示。
+安装脚本会立即启动监控和 API，并创建桌面 **Codex Usage API Monitor** 快捷方式、当前用户 Windows“启动”文件夹中的开机快捷方式。以后在用户登录后，监控会自动启动 API；双击桌面监控快捷方式也会启动 API，已有监控或服务时不会重复运行。安装时会移除旧的 **Codex Usage API** 直启快捷方式。
 
-此快捷方式只启动状态图标，**不会自动启动 API**。重复运行安装脚本不会创建第二个图标。移除开机显示时，删除“启动”文件夹中的 `Codex Usage API Status.lnk`，并通过图标右键菜单退出。状态图标的启动错误写入 `.runtime/tray-stderr.log`，该文件不进入 Git。
+通知区域图标**绿色**表示本机 `/health` 返回本项目的正常响应，**红色**表示 API 未运行或无响应。右键可启动、停止或刷新 API 状态，也可只退出图标；退出图标不会停止 API。手动停止 API 后，监控不会每 10 秒擅自重启它；可用右键“启动 API”或双击桌面监控快捷方式重新启动。状态每 10 秒检查一次，检查本机地址时绕过代理。图标可能在任务栏右侧的隐藏图标区域，可在 Windows 设置中选择始终显示。
+
+配置修改后用右键菜单先停止、再启动 API。服务日志在 `.runtime/stdout.log`、`.runtime/stderr.log`，状态图标的启动错误在 `.runtime/tray-stderr.log`；这些文件不进入 Git。移除登录后自启时，删除“启动”文件夹中的 `Codex Usage API Status.lnk`，并通过图标右键菜单退出。
 
 ## 接口与鉴权
 
